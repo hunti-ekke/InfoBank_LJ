@@ -189,10 +189,11 @@ async def upload_document(
             time.sleep(2)
 
         prompt = """
-        Analyze this document and extract its 3 to 5 most important core concepts in English. 
-        For each concept, provide 1 or 2 common English synonyms. 
-        Return ONLY a single, comma-separated list of these words. 
-        No extra text, no markdown.
+        Analyze the following document text.
+        Extract the 3 to 5 most important core concepts in English.
+        
+        CRITICAL RULE: You must output ONLY single words (unigrams)! DO NOT output multi-word phrases (e.g., output "health", not "health benefits").
+        Return ONLY a single, comma-separated list of these words in lowercase. No extra text.
         """
         response = client.models.generate_content(
             model=MODEL_NAME,
@@ -256,17 +257,23 @@ async def ask_infobank(
 ):
     try:
         kw_prompt = f"""
-        Analyze the following question (it may be in Hungarian).
-        1. Identify the 3 most important core concepts in English.
+        Analyze the following question. 
+        Use the recent conversation history to understand the context if the question relies on previous concepts.
+        
+        Current Question: {question}
+        
+        1. Identify the 3 most important core concepts in English for the current question.
         2. For each concept, generate 2 common English synonyms.
-        3. Return ONLY a single, comma-separated list of these ~9 words. No extra text, no markdown.
-        Question: {question}
+        3. CRITICAL RULE: You must output ONLY single words (unigrams)! DO NOT output multi-word phrases (e.g., output "health", not "health of residents").
+        4. Return ONLY a single, comma-separated list of these ~9 single words. No extra text, no markdown.
+        5. Answer in the same language as the question was given in.
         """
         kw_response = client.models.generate_content(model=MODEL_NAME, contents=kw_prompt)
-
         question_keywords = [k.strip().lower() for k in kw_response.text.split(',') if k.strip()]
         
         matched_keywords = db.query(models.Keyword).filter(models.Keyword.word.in_(question_keywords)).all()
+        print(f"--- DEBUG: A Gemini ezeket a kulcsszavakat kereste: {question_keywords} ---")
+
         if not matched_keywords:
             return {"status": "controlled_failure", "message": "Nincs a kérdéshez kapcsolódó dokumentum az InfoBankban."}
 
