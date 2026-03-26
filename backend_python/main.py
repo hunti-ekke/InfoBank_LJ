@@ -549,3 +549,56 @@ def delete_document(
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Hiba a törlés során: {str(e)}")
+
+@app.get("/api/users/search")
+def search_users(q: str, db: Session = Depends(get_db)):
+    """Élő kereső (autocomplete) a felhasználónevekhez tulajdonjog átadásánál."""
+    if not q or len(q) < 2:
+        return {"status": "success", "users": []}
+    
+    users = db.query(models.User).filter(
+        models.User.username.ilike(f"%{q}%")
+    ).limit(5).all()
+    
+    return {
+        "status": "success", 
+        "users": [{"username": u.username, "avatar_url": getattr(u, 'avatar_url', None)} for u in users]
+    }
+
+@app.post("/api/documents/transfer")
+def transfer_document_ownership(
+    doc_id: str = Form(...),
+    user_id: str = Form(...),
+    new_username: str = Form(...),
+    db: Session = Depends(get_db)
+):
+    """Tulajdonjog átadása egy másik felhasználónak (A opció: régi tulaj elveszíti)."""
+
+    current_perm = db.query(models.UserDocumentPermission).filter(
+        models.UserDocumentPermission.document_id == doc_id,
+        models.UserDocumentPermission.user_id == user_id
+    ).first()
+
+    if not current_perm or current_perm.permission_type != models.PermissionType.Owner:
+        raise HTTPException(status_code=403, detail="Nincs jogosultságod átadni ezt a dokumentumot (csak Owner teheti).")
+
+    target_user = db.query(models.User).filter(models.User.username == new_username).first()
+    if not target_user:
+        raise HTTPException(status_code=404, detail="A megadott felhasználó nem található a rendszerben.")
+
+    if target_user.id == user_id:
+        raise HTTPException(status_code=400, detail="Saját magadnak nem adhatod át a dokumentumot.")
+
+    existing_target_perm = db.query(models.UserDocumentPermission).filter(
+        models.UserDocumentPermission.document_id == doc_id,
+        models.UserDocumentPermission.user_id == target_user.id
+    ).first()
+
+    if existing_target_perm:
+        db.delete(existing_target_perm)
+
+    current_perm.user_id = target_user.id
+    
+    db.commit()
+    
+    return {"status": "success", "message": f"Tulajdonjog sikeresen átadva neki: {target_user.username}"}
