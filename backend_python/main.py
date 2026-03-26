@@ -4,6 +4,7 @@ import time
 from typing import List
 from fastapi import FastAPI, Depends, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 from dotenv import load_dotenv
 from pydantic import BaseModel
@@ -25,7 +26,7 @@ load_dotenv()
 
 # GOOGLE AI 
 client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
-MODEL_NAME = "gemini-3.1-flash-lite-preview"
+MODEL_NAME = "gemini-2.5-flash"
 EMBEDDING_MODEL = "gemini-embedding-001"
 
 chroma_client = chromadb.PersistentClient(path="./chroma_data")
@@ -46,6 +47,11 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 SECRET_KEY = "info-bank-szuper-titkos-kulcs-2026"
 ALGORITHM = "HS256"
 
+# Token kinyeréséhez a fejlécből
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/login")
+
+# --- SCHEMAS ---
+
 class UserRegister(BaseModel):
     email: str
     username: str
@@ -55,6 +61,13 @@ class UserLogin(BaseModel):
     email: str
     password: str
 
+class ProfileUpdate(BaseModel):
+    full_name: str | None = None
+    email: str | None = None
+    avatar_url: str | None = None
+
+# --- UTILS ---
+
 def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 200) -> List[str]:
     chunks = []
     start = 0
@@ -63,6 +76,16 @@ def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 200) -> List[st
         chunks.append(text[start:end])
         start += (chunk_size - overlap)
     return chunks
+
+def get_current_user_id(token: str = Depends(oauth2_scheme)):
+    """Dekódolja a JWT tokent és visszaadja a user_id-t (sub)."""
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        return payload.get("sub")
+    except jwt.PyJWTError:
+        raise HTTPException(status_code=401, detail="Érvénytelen vagy lejárt token.")
+
+# --- AUTH ENDPOINTS ---
 
 @app.post("/api/register")
 def register_user(user_data: UserRegister, db: Session = Depends(get_db)):
@@ -99,7 +122,44 @@ def login_user(user_data: UserLogin, db: Session = Depends(get_db)):
         "username": user.username
     }
 
-# CORE endpoints
+# --- PROFILE ENDPOINTS ---
+
+@app.get("/api/profile/me")
+def get_profile(user_id: str = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    """Visszaadja a bejelentkezett felhasználó adatait."""
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Felhasználó nem található.")
+    return {
+        "username": user.username,
+        "email": user.email,
+        "full_name": getattr(user, 'full_name', None),
+        "avatar_url": getattr(user, 'avatar_url', None),
+        "users_in_db": db.query(models.User).count()
+    }
+
+@app.put("/api/profile/update")
+def update_profile(
+    profile_data: ProfileUpdate, 
+    user_id: str = Depends(get_current_user_id), 
+    db: Session = Depends(get_db)
+):
+    """Frissíti a bejelentkezett felhasználó profiladatait."""
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Felhasználó nem található.")
+
+    if profile_data.full_name is not None:
+        user.full_name = profile_data.full_name
+    if profile_data.email is not None:
+        user.email = profile_data.email
+    if profile_data.avatar_url is not None:
+        user.avatar_url = profile_data.avatar_url
+
+    db.commit()
+    return {"status": "success", "message": "Profil sikeresen frissítve."}
+
+# --- CORE ENDPOINTS ---
 
 @app.post("/api/upload")
 async def upload_document(
@@ -128,15 +188,22 @@ async def upload_document(
                 raise HTTPException(status_code=500, detail="Gemini file processing failed.")
             time.sleep(2)
 
-        prompt = "Provide exactly 3-5 English keywords for this document. Return ONLY the words, separated by commas."
+        prompt = """
+        Analyze this document and extract its 3 to 5 most important core concepts in English. 
+        For each concept, provide 1 or 2 common English synonyms. 
+        Return ONLY a single, comma-separated list of these words. 
+        No extra text, no markdown.
+        """
         response = client.models.generate_content(
             model=MODEL_NAME,
             contents=[gemini_file, prompt]
         )
-        keyword_list = [k.strip() for k in response.text.split(',')]
+        
+        raw_keywords = [k.strip().lower() for k in response.text.split(',') if k.strip()]
+        keyword_list = list(set(raw_keywords))
 
         doc_id = str(uuid.uuid4())
-        db.add(models.Document(id=doc_id, file_path=gemini_file.name))
+        db.add(models.Document(id=doc_id, file_path=file.filename))
         db.add(models.UserDocumentPermission(
             id=str(uuid.uuid4()), user_id=user_id, document_id=doc_id, permission_type=permission_type
         ))
@@ -188,9 +255,16 @@ async def ask_infobank(
     db: Session = Depends(get_db)
 ):
     try:
-        kw_prompt = f"Extract the 3 most important English keywords from this question. Return ONLY the words, separated by commas. Question: {question}"
+        kw_prompt = f"""
+        Analyze the following question (it may be in Hungarian).
+        1. Identify the 3 most important core concepts in English.
+        2. For each concept, generate 2 common English synonyms.
+        3. Return ONLY a single, comma-separated list of these ~9 words. No extra text, no markdown.
+        Question: {question}
+        """
         kw_response = client.models.generate_content(model=MODEL_NAME, contents=kw_prompt)
-        question_keywords = [k.strip() for k in kw_response.text.split(',')]
+
+        question_keywords = [k.strip().lower() for k in kw_response.text.split(',') if k.strip()]
         
         matched_keywords = db.query(models.Keyword).filter(models.Keyword.word.in_(question_keywords)).all()
         if not matched_keywords:
@@ -253,12 +327,25 @@ async def ask_infobank(
             )
         )
 
+        sources_list = []
+        if results['documents'] and results['documents'][0]:
+            for chunk_text, meta in zip(results['documents'][0], results['metadatas'][0]):
+                doc_id = meta.get("document_id")
+                doc_record = db.query(models.Document).filter(models.Document.id == doc_id).first()
+                file_name = doc_record.file_path if doc_record else "Ismeretlen dokumentum"
+                
+                sources_list.append({
+                    "file_name": file_name,
+                    "text": chunk_text
+                })
+
         return {
             "status": "success",
             "question": question,
             "extracted_keywords": question_keywords,
             "searched_documents_count": len(direct_access_docs),
-            "answer": response.text
+            "answer": response.text,
+            "sources": sources_list
         }
 
     except Exception as e:
@@ -269,7 +356,6 @@ async def ask_infobank(
 @app.get("/api/test-db")
 def test_db_connection(db: Session = Depends(get_db)):
     return {"status": "success", "users_in_db": db.query(models.User).count()}
-
 
 @app.get("/api/knowledge-map/{user_id}")
 def get_knowledge_map(user_id: str, db: Session = Depends(get_db)):
@@ -294,6 +380,53 @@ def get_knowledge_map(user_id: str, db: Session = Depends(get_db)):
             "status": "success", 
             "map": [{"keyword": r[0], "count": r[1]} for r in results]
         }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/ontology/{user_id}")
+def get_ontology(user_id: str, db: Session = Depends(get_db)):
+    """Lekéri a kulcsszavakat és a köztük lévő kapcsolatokat (ugyanabban a doksiban szerepelnek)."""
+    try:
+        permissions = db.query(models.UserDocumentPermission).filter(
+            models.UserDocumentPermission.user_id == user_id
+        ).all()
+        doc_ids = [p.document_id for p in permissions]
+
+        if not doc_ids:
+            return {"nodes": [], "links": []}
+
+        doc_kws = db.query(models.DocumentKeyword).filter(
+            models.DocumentKeyword.document_id.in_(doc_ids)
+        ).all()
+
+        doc_to_kw = {}
+        kw_counts = {}
+        all_kw_ids = set()
+
+        for dk in doc_kws:
+            if dk.document_id not in doc_to_kw:
+                doc_to_kw[dk.document_id] = []
+            doc_to_kw[dk.document_id].append(dk.keyword_id)
+            kw_counts[dk.keyword_id] = kw_counts.get(dk.keyword_id, 0) + 1
+            all_kw_ids.add(dk.keyword_id)
+
+        kws = db.query(models.Keyword).filter(models.Keyword.id.in_(list(all_kw_ids))).all()
+        kw_id_to_word = {kw.id: kw.word for kw in kws}
+
+        nodes = [{"id": kw_id_to_word[k_id], "val": count} for k_id, count in kw_counts.items()]
+
+        links_dict = {}
+        for doc_id, k_ids in doc_to_kw.items():
+            for i in range(len(k_ids)):
+                for j in range(i + 1, len(k_ids)):
+                    kw1 = kw_id_to_word[k_ids[i]]
+                    kw2 = kw_id_to_word[k_ids[j]]
+                    pair = tuple(sorted([kw1, kw2]))
+                    links_dict[pair] = links_dict.get(pair, 0) + 1
+
+        links = [{"source": pair[0], "target": pair[1], "value": weight} for pair, weight in links_dict.items()]
+
+        return {"status": "success", "nodes": nodes, "links": links}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -330,3 +463,80 @@ def get_user_documents(user_id: str, db: Session = Depends(get_db)):
         return {"status": "success", "documents": doc_list}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/documents/update-keywords")
+def update_keywords(doc_id: str = Form(...), keywords: str = Form(...), db: Session = Depends(get_db)):
+    """Törli a régi kulcsszavakat és elmenti az újakat (vesszővel elválasztva)."""
+    db.query(models.DocumentKeyword).filter(models.DocumentKeyword.document_id == doc_id).delete()
+    
+    new_kw_list = [k.strip() for k in keywords.split(',') if k.strip()]
+    for word in new_kw_list:
+        db_kw = db.query(models.Keyword).filter(models.Keyword.word == word).first()
+        if not db_kw:
+            db_kw = models.Keyword(word=word)
+            db.add(db_kw)
+            db.flush()
+        db.add(models.DocumentKeyword(document_id=doc_id, keyword_id=db_kw.id))
+    
+    db.commit()
+    return {"status": "success", "message": "Keywords updated"}
+
+@app.post("/api/documents/update-permission")
+def update_permission(
+    doc_id: str = Form(...), 
+    user_id: str = Form(...), 
+    new_perm: str = Form(...), 
+    db: Session = Depends(get_db)
+):
+    """Módosítja a jogosultságot, ha a user az 'Owner'."""
+    perm_record = db.query(models.UserDocumentPermission).filter(
+        models.UserDocumentPermission.document_id == doc_id,
+        models.UserDocumentPermission.user_id == user_id
+    ).first()
+
+    if not perm_record or perm_record.permission_type != "Owner":
+        raise HTTPException(status_code=403, detail="Only the Owner can change permissions.")
+
+    perm_record.permission_type = new_perm
+    db.commit()
+    return {"status": "success", "message": "Permission updated"}
+
+@app.delete("/api/documents/delete")
+def delete_document(
+    doc_id: str = Form(...), 
+    user_id: str = Form(...), 
+    db: Session = Depends(get_db)
+):
+    """Intelligens törlés, kezeli a leiratkozást és a teljes megsemmisítést is."""
+    perm_record = db.query(models.UserDocumentPermission).filter(
+        models.UserDocumentPermission.document_id == doc_id,
+        models.UserDocumentPermission.user_id == user_id
+    ).first()
+
+    if not perm_record:
+        raise HTTPException(status_code=404, detail="Dokumentum vagy jogosultság nem található.")
+    
+    if perm_record.permission_type != "Owner":
+        db.delete(perm_record)
+        db.commit()
+        return {"status": "success", "message": "Sikeresen leiratkoztál a dokumentumról."}
+
+    try:
+        try:
+            collection.delete(where={"document_id": doc_id})
+        except Exception:
+            pass
+        db.query(models.DocumentChunk).filter(models.DocumentChunk.document_id == doc_id).delete()
+        db.query(models.DocumentKeyword).filter(models.DocumentKeyword.document_id == doc_id).delete()
+        db.query(models.UserDocumentPermission).filter(models.UserDocumentPermission.document_id == doc_id).delete()
+
+        doc = db.query(models.Document).filter(models.Document.id == doc_id).first()
+        if doc:
+            db.delete(doc)
+        
+        db.commit()
+        return {"status": "success", "message": "Dokumentum és vektorok véglegesen törölve."}
+    
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Hiba a törlés során: {str(e)}")

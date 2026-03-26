@@ -3,516 +3,530 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>InfoBank - Digital Ownership</title>
+    <title>InfoBank Pro</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <script src="https://d3js.org/d3.v7.min.js"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
         body { font-family: 'Inter', sans-serif; }
         .no-scrollbar::-webkit-scrollbar { display: none; }
-        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
         .typing-indicator span { animation: blink 1.4s infinite both; height: 6px; width: 6px; background: #3b82f6; border-radius: 50%; display: inline-block; margin: 0 1px; }
         .typing-indicator span:nth-child(2) { animation-delay: 0.2s; }
         .typing-indicator span:nth-child(3) { animation-delay: 0.4s; }
         @keyframes blink { 0% { opacity: 0.2; } 20% { opacity: 1; } 100% { opacity: 0.2; } }
+        /* D3 tooltip és kurzor stílusok */
+        #view-ontology svg { cursor: grab; }
+        #view-ontology svg:active { cursor: grabbing; }
+        /* Modal háttér elhomályosítás */
+        .modal-backdrop { background-color: rgba(0, 0, 0, 0.5); backdrop-filter: blur(2px); transition: opacity 0.3s ease; }
     </style>
 </head>
 <body class="bg-gray-50 h-screen flex overflow-hidden">
 
-    <div id="login-screen" class="absolute inset-0 bg-gray-50 z-50 flex items-center justify-center">
-        <div class="bg-white p-8 rounded-2xl shadow-lg max-w-md w-full border border-gray-100">
-            <div class="flex items-center justify-center space-x-3 mb-6">
-                <div class="w-10 h-10 bg-blue-600 rounded-lg flex items-center justify-center text-white font-bold shadow-md">IB</div>
-                <h1 class="text-2xl font-bold text-gray-800">InfoBank</h1>
-            </div>
-            
+    <div id="login-screen" class="absolute inset-0 bg-gray-100 z-50 flex items-center justify-center">
+        <div class="bg-white p-8 rounded-2xl shadow-xl w-96 border border-gray-200">
+            <div class="flex justify-center mb-6"><div class="w-12 h-12 bg-blue-600 rounded-xl flex items-center justify-center text-white text-2xl font-bold shadow-lg">IB</div></div>
             <div id="form-login" class="space-y-4">
-                <h2 class="text-center text-gray-600 mb-6 font-medium">Log in to your Data Treasure</h2>
-                <input type="email" id="log-email" placeholder="Email address" class="w-full bg-gray-50 border border-gray-300 rounded-lg px-4 py-2 outline-none focus:ring-2 focus:ring-blue-500">
-                <input type="password" id="log-pass" placeholder="Password" class="w-full bg-gray-50 border border-gray-300 rounded-lg px-4 py-2 outline-none focus:ring-2 focus:ring-blue-500">
-                <button onclick="doLogin()" id="btn-login-submit" class="w-full bg-blue-600 text-white font-semibold py-2.5 rounded-lg hover:bg-blue-700 transition">Log In</button>
-                <p class="text-center text-sm text-gray-500 mt-4">Don't have an account? <a href="#" onclick="toggleAuth()" class="text-blue-600 font-medium hover:underline">Register here</a></p>
+                <input type="email" id="log-email" placeholder="Email" class="w-full border rounded-lg p-3 outline-none focus:ring-2 focus:ring-blue-500">
+                <input type="password" id="log-pass" placeholder="Password" class="w-full border rounded-lg p-3 outline-none focus:ring-2 focus:ring-blue-500">
+                <button onclick="doLogin()" class="w-full bg-blue-600 text-white py-3 rounded-lg font-bold hover:bg-blue-700 transition">Login</button>
+                <p class="text-center text-sm text-gray-500">New? <a href="#" onclick="toggleAuth()" class="text-blue-600 font-bold">Register</a></p>
             </div>
-
             <div id="form-register" class="space-y-4 hidden">
-                <h2 class="text-center text-gray-600 mb-6 font-medium">Create a new account</h2>
-                <input type="text" id="reg-name" placeholder="Username" class="w-full bg-gray-50 border border-gray-300 rounded-lg px-4 py-2 outline-none focus:ring-2 focus:ring-blue-500">
-                <input type="email" id="reg-email" placeholder="Email address" class="w-full bg-gray-50 border border-gray-300 rounded-lg px-4 py-2 outline-none focus:ring-2 focus:ring-blue-500">
-                <input type="password" id="reg-pass" placeholder="Password" class="w-full bg-gray-50 border border-gray-300 rounded-lg px-4 py-2 outline-none focus:ring-2 focus:ring-blue-500">
-                <button onclick="doRegister()" id="btn-reg-submit" class="w-full bg-green-600 text-white font-semibold py-2.5 rounded-lg hover:bg-green-700 transition">Register</button>
-                <p class="text-center text-sm text-gray-500 mt-4">Already have an account? <a href="#" onclick="toggleAuth()" class="text-blue-600 font-medium hover:underline">Log In</a></p>
+                <input type="text" id="reg-name" placeholder="Username" class="w-full border rounded-lg p-3 outline-none focus:ring-2 focus:ring-blue-500">
+                <input type="email" id="reg-email" placeholder="Email" class="w-full border rounded-lg p-3 outline-none focus:ring-2 focus:ring-blue-500">
+                <input type="password" id="reg-pass" placeholder="Password" class="w-full border rounded-lg p-3 outline-none focus:ring-2 focus:ring-blue-500">
+                <button onclick="doRegister()" class="w-full bg-green-600 text-white py-3 rounded-lg font-bold hover:bg-green-700 transition">Sign Up</button>
+                <p class="text-center text-sm text-gray-500">Back to <a href="#" onclick="toggleAuth()" class="text-blue-600 font-bold">Login</a></p>
             </div>
         </div>
     </div>
 
-    <div id="app-wrapper" class="flex w-full h-full hidden">
-        
-        <aside class="w-64 bg-white border-r border-gray-200 flex flex-col justify-between hidden md:flex z-20 shadow-sm">
-            <div>
-                <div class="p-6 flex items-center space-x-3">
-                    <div class="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white font-bold shadow-sm">IB</div>
-                    <span class="text-xl font-bold text-gray-800 tracking-tight">InfoBank</span>
-                </div>
-                
-                <nav class="mt-4 px-4 space-y-1">
-                    <button id="btn-chat" onclick="switchView('chat')" class="nav-btn w-full flex items-center space-x-3 px-4 py-3 bg-blue-50 text-blue-700 rounded-lg font-medium transition-all">
+    <div id="app-wrapper" class="hidden flex w-full h-full">
+        <aside class="w-64 bg-white border-r flex flex-col justify-between shadow-sm z-20">
+            <div class="p-6">
+                <div class="flex items-center space-x-3 mb-8"><div class="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white font-bold">IB</div><span class="text-xl font-bold text-gray-800">InfoBank</span></div>
+                <nav class="space-y-2">
+                    <button onclick="switchView('chat')" id="btn-chat" class="nav-btn w-full flex items-center space-x-3 px-4 py-3 bg-blue-50 text-blue-700 rounded-xl font-medium transition">
                         <i class="fas fa-comment-dots w-5 text-center"></i><span>Assistant</span>
                     </button>
-                    <button id="btn-map" onclick="switchView('map')" class="nav-btn w-full flex items-center space-x-3 px-4 py-3 text-gray-600 hover:bg-gray-100 rounded-lg font-medium transition-all">
+                    <button onclick="switchView('map')" id="btn-map" class="nav-btn w-full flex items-center space-x-3 px-4 py-3 text-gray-600 hover:bg-gray-100 rounded-xl font-medium transition">
                         <i class="fas fa-project-diagram w-5 text-center"></i><span>Knowledge Map</span>
                     </button>
-                    <button id="btn-upload" onclick="switchView('upload')" class="nav-btn w-full flex items-center space-x-3 px-4 py-3 text-gray-600 hover:bg-gray-100 rounded-lg font-medium transition-all">
-                        <i class="fas fa-cloud-upload-alt w-5 text-center"></i><span>Upload Document</span>
+                    <button onclick="switchView('ontology')" id="btn-ontology" class="nav-btn w-full flex items-center space-x-3 px-4 py-3 text-gray-600 hover:bg-gray-100 rounded-xl font-medium transition">
+                        <i class="fas fa-network-wired w-5 text-center"></i><span>Smart Ontology</span>
                     </button>
-                    <button id="btn-manager" onclick="switchView('manager')" class="nav-btn w-full flex items-center space-x-3 px-4 py-3 text-gray-600 hover:bg-gray-100 rounded-lg font-medium transition-all">
-                        <i class="fas fa-users-cog w-5 text-center"></i><span>Permissions</span>
+                    <button onclick="switchView('manager')" id="btn-manager" class="nav-btn w-full flex items-center space-x-3 px-4 py-3 text-gray-600 hover:bg-gray-100 rounded-xl font-medium transition">
+                        <i class="fas fa-tasks w-5 text-center"></i><span>Management</span>
                     </button>
                 </nav>
             </div>
             
-            <div class="p-4 border-t border-gray-200 bg-gray-50 flex justify-between items-center">
+            <div class="p-4 border-t bg-gray-50 relative group">
                 <div class="flex items-center space-x-3 overflow-hidden">
-                    <div class="w-10 h-10 bg-gradient-to-tr from-blue-500 to-indigo-600 rounded-full flex items-center justify-center text-white font-bold shadow-sm flex-shrink-0"><i class="fas fa-user"></i></div>
-                    <div class="overflow-hidden">
-                        <p class="text-sm font-semibold text-gray-800 truncate" id="display-user-id">User</p>
-                        <p class="text-xs text-blue-600 font-medium truncate">Digital Owner</p>
+                    <div id="sidebar-avatar-container" class="w-12 h-12 rounded-full border-2 border-white shadow-md flex-shrink-0 flex items-center justify-center overflow-hidden bg-gradient-to-tr from-blue-500 to-indigo-600">
                     </div>
+                    <div class="flex-1 overflow-hidden">
+                        <p id="sidebar-display-username" class="font-bold text-gray-800 truncate">Username</p>
+                        <p id="sidebar-display-fullname" class="text-xs text-gray-500 truncate hidden">Full Name</p>
+                    </div>
+                    <button onclick="openProfileModal()" class="absolute right-2 top-2 bg-white/80 p-1.5 rounded-full text-blue-600 shadow-sm opacity-0 group-hover:opacity-100 transition-opacity hover:bg-blue-50">
+                        <i class="fas fa-pen text-xs"></i>
+                    </button>
                 </div>
-                <button onclick="logout()" class="text-gray-400 hover:text-red-500 transition" title="Log out"><i class="fas fa-sign-out-alt"></i></button>
+                <button onclick="location.reload()" class="mt-3 w-full text-xs text-gray-400 hover:text-red-500 transition flex items-center justify-center gap-1">
+                    <i class="fas fa-sign-out-alt"></i><span>Log Out</span>
+                </button>
             </div>
         </aside>
 
-        <div class="flex-1 flex flex-col relative">
+        <main class="flex-1 flex flex-col relative bg-white overflow-hidden">
+            <header class="h-16 border-b flex items-center px-6 font-semibold text-gray-800 shadow-sm" id="view-title">Assistant</header>
             
-            <main id="view-chat" class="view-section flex-1 flex flex-col h-full bg-white">
-                <header class="h-16 bg-white border-b border-gray-200 flex items-center px-6 z-10 shadow-sm">
-                    <h1 class="text-lg font-semibold text-gray-800">Source-Grounded Assistant</h1>
-                </header>
-                <div id="chat-container" class="flex-1 overflow-y-auto p-6 space-y-6 no-scrollbar pb-32">
-                    <div class="flex justify-start">
-                        <div class="bg-gray-50 border border-gray-200 p-4 rounded-2xl rounded-tl-sm max-w-2xl shadow-sm text-gray-700">
-                            Hello! I am your InfoBank Assistant. You can ask me questions about your uploaded documents. My answers are strictly grounded in your personal data treasure.
-                        </div>
+            <div id="view-chat" class="view-section flex-1 overflow-y-auto p-6 space-y-4 no-scrollbar pb-28 flex flex-col">
+                <div class="flex justify-start w-full">
+                    <div class="bg-gray-100 border border-gray-200 p-4 rounded-2xl rounded-tl-none max-w-[80%] md:max-w-2xl text-gray-700 shadow-sm text-sm">
+                        Hello! I am your InfoBank Assistant. I only answer based on your uploaded documents. How can I help?
                     </div>
                 </div>
-                <div class="absolute bottom-0 w-full bg-white border-t border-gray-200 p-4">
-                    <div class="max-w-4xl mx-auto relative flex items-center">
-                        <input type="text" id="chat-input" onkeypress="handleChatKeyPress(event)" placeholder="Ask about your documents..." class="w-full bg-gray-50 border border-gray-300 rounded-full pl-6 pr-14 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-inner">
-                        <button onclick="askQuestion()" id="btn-send-chat" class="absolute right-2 w-10 h-10 bg-blue-600 hover:bg-blue-700 transition text-white rounded-full flex items-center justify-center shadow-md"><i class="fas fa-paper-plane"></i></button>
-                    </div>
-                </div>
-            </main>
+            </div>
+            
+            <div id="view-map" class="view-section hidden flex-1 p-8 overflow-y-auto flex flex-wrap gap-4 justify-center items-center bg-gray-50"></div>
 
-            <main id="view-map" class="view-section hidden flex-1 flex flex-col h-full bg-gray-50">
-                <header class="h-16 bg-white border-b border-gray-200 flex items-center px-6 shadow-sm">
-                    <h1 class="text-lg font-semibold text-gray-800">Knowledge Map (Data Treasure)</h1>
-                </header>
-                <div class="flex-1 p-8 overflow-y-auto flex flex-col items-center justify-start pt-12">
-                    <h2 class="text-2xl font-bold text-gray-800 mb-2">Your Digital Assets</h2>
-                    <p class="text-gray-500 mb-10 text-center max-w-lg">These topics and keywords make up your personal InfoBank. The size indicates the number of documents in that domain.</p>
-                    
-                    <div id="map-container" class="flex flex-wrap justify-center gap-4 max-w-4xl p-8 bg-white rounded-2xl shadow-sm border border-gray-100 min-h-[300px] items-center">
-                        <div class="text-gray-400"><i class="fas fa-spinner fa-spin mr-2"></i>Loading Map...</div>
+            <div id="view-ontology" class="view-section hidden flex-1 relative bg-gray-50 overflow-hidden"></div>
+
+            <div id="view-manager" class="view-section hidden flex-1 p-6 overflow-y-auto bg-gray-50">
+                <div class="bg-white rounded-xl shadow-sm border overflow-hidden mb-6">
+                    <table class="min-w-full divide-y divide-gray-200 text-sm">
+                        <thead class="bg-gray-50 font-bold text-gray-500 uppercase">
+                            <tr>
+                                <th class="px-6 py-3 text-left tracking-wider">Document</th>
+                                <th class="px-6 py-3 text-left tracking-wider w-1/2">Keywords</th>
+                                <th class="px-6 py-3 text-left tracking-wider">Rights</th>
+                                <th class="px-6 py-3 text-center tracking-wider">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="docs-tbody" class="divide-y divide-gray-200 bg-white"></tbody>
+                    </table>
+                </div>
+                
+                <div class="bg-blue-50 border-2 border-dashed border-blue-200 p-6 rounded-2xl text-center flex flex-wrap justify-center items-center gap-3">
+                    <input type="file" id="upload-file" class="hidden" accept=".pdf" onchange="updateFileLabel()">
+                    <button id="btn-select-pdf" onclick="document.getElementById('upload-file').click()" class="bg-white border border-blue-200 text-blue-600 px-4 py-2 rounded-lg font-bold hover:bg-blue-100 transition shadow-sm truncate max-w-xs">
+                        Select PDF
+                    </button>
+                    <select id="upload-permission" class="border rounded-lg p-2 text-sm outline-none focus:ring-2 focus:ring-blue-400">
+                        <option value="Owner">Owner</option>
+                        <option value="Reader">Reader</option>
+                        <option value="Aggregate">Aggregate</option>
+                    </select>
+                    <button onclick="uploadDocument()" id="btn-upload" class="bg-blue-600 text-white px-6 py-2 rounded-lg font-bold hover:bg-blue-700 transition ml-2">Upload & Ingest</button>
+                </div>
+            </div>
+
+            <div id="chat-bar" class="absolute bottom-0 w-full p-4 bg-white border-t z-10">
+                <div class="max-w-4xl mx-auto flex space-x-2">
+                    <input type="text" id="chat-input" onkeypress="handleChatKeyPress(event)" placeholder="Ask your data treasure..." class="flex-1 border rounded-full px-6 py-3 outline-none focus:ring-2 focus:ring-blue-500 shadow-inner bg-gray-50">
+                    <button onclick="askQuestion()" id="btn-send-chat" class="bg-blue-600 text-white w-12 h-12 rounded-full flex items-center justify-center shadow-lg hover:bg-blue-700 transition"><i class="fas fa-paper-plane"></i></button>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <div id="profile-modal" class="hidden fixed inset-0 z-50 modal-backdrop flex items-center justify-center p-4">
+        <div class="bg-white rounded-3xl shadow-2xl w-full max-w-lg border border-gray-100 overflow-hidden">
+            <div class="bg-gray-50 p-6 border-b flex justify-between items-center">
+                <h2 class="text-xl font-bold text-gray-800 flex items-center gap-2"><i class="fas fa-user-edit text-blue-500"></i>Customize Profile</h2>
+                <button onclick="closeProfileModal()" class="text-gray-400 hover:text-red-500 transition"><i class="fas fa-times text-xl"></i></button>
+            </div>
+            <div class="p-8 space-y-5">
+                <div class="flex justify-center mb-6">
+                    <div id="modal-avatar-preview" class="w-24 h-24 rounded-full border-4 border-white shadow-xl flex items-center justify-center overflow-hidden bg-gradient-to-tr from-blue-500 to-indigo-600">
                     </div>
                 </div>
-            </main>
-
-            <main id="view-upload" class="view-section hidden flex-1 flex flex-col h-full bg-gray-50">
-                <header class="h-16 bg-white border-b border-gray-200 flex items-center px-6 shadow-sm">
-                    <h1 class="text-lg font-semibold text-gray-800">Ingest New Document</h1>
-                </header>
-                <div class="flex-1 p-8 overflow-y-auto flex justify-center items-start pt-12">
-                    <div class="max-w-xl w-full bg-white p-8 rounded-2xl shadow-sm border border-gray-100">
-                        <div class="mb-6">
-                            <label class="block text-sm font-medium text-gray-700 mb-2">1. Select PDF File</label>
-                            <input type="file" id="upload-file" accept=".pdf" class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 transition cursor-pointer border border-gray-200 rounded-lg p-2">
-                        </div>
-                        <div class="mb-8">
-                            <label class="block text-sm font-medium text-gray-700 mb-2">2. Assign Ownership Rights</label>
-                            <select id="upload-permission" class="w-full bg-gray-50 border border-gray-300 rounded-lg px-4 py-2.5 focus:ring-2 focus:ring-blue-500 outline-none">
-                                <option value="Owner">Owner (Full control & Direct Query)</option>
-                                <option value="Reader">Reader (Direct Query only)</option>
-                                <option value="Aggregate">Aggregate (Anonymous participation only)</option>
-                            </select>
-                            <p class="text-xs text-gray-500 mt-2"><i class="fas fa-info-circle mr-1 text-blue-500"></i> Documents with 'Aggregate' rights cannot be queried directly to protect privacy.</p>
-                        </div>
-                        <button id="upload-btn" onclick="uploadDocument()" class="w-full bg-blue-600 text-white font-semibold py-3 rounded-lg hover:bg-blue-700 shadow-md transition-colors flex justify-center items-center">
-                            <span>Process & Ingest</span>
-                        </button>
-                        <div id="upload-result" class="mt-8 hidden bg-green-50 p-4 rounded-xl border border-green-200">
-                            <h4 class="font-semibold text-green-800 mb-1"><i class="fas fa-check-circle mr-2"></i>Successfully Ingested!</h4>
-                            <p class="text-xs text-green-700 mb-3">The AI generated the following semantic keywords for routing:</p>
-                            <div id="upload-keywords" class="flex flex-wrap gap-2"></div>
-                        </div>
-                    </div>
+                <div class="space-y-1">
+                    <label class="text-xs font-semibold text-gray-500 uppercase tracking-wider">Full Name</label>
+                    <input type="text" id="prof-full-name" placeholder="E.g. John Doe" class="w-full border rounded-lg p-3 outline-none focus:ring-2 focus:ring-blue-500 bg-gray-50">
                 </div>
-            </main>
-
-            <main id="view-manager" class="view-section hidden flex-1 flex flex-col h-full bg-gray-50">
-                <header class="h-16 bg-white border-b border-gray-200 flex items-center justify-between px-6 shadow-sm">
-                    <h1 class="text-lg font-semibold text-gray-800">Digital Ownership & Permissions</h1>
-                    <button onclick="switchView('upload')" class="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 shadow-sm transition"><i class="fas fa-plus mr-1"></i>New PDF</button>
-                </header>
-                <div class="flex-1 p-6 overflow-y-auto">
-                    <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-                        <table class="min-w-full divide-y divide-gray-200">
-                            <thead class="bg-gray-50">
-                                <tr>
-                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Document</th>
-                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Keywords</th>
-                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Permission Right</th>
-                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Upload Date</th>
-                                </tr>
-                            </thead>
-                            <tbody id="docs-tbody" class="bg-white divide-y divide-gray-200">
-                                <tr><td colspan="4" class="px-6 py-4 text-center text-gray-400"><i class="fas fa-spinner fa-spin mr-2"></i>Loading Documents...</td></tr>
-                            </tbody>
-                        </table>
-                    </div>
+                <div class="space-y-1">
+                    <label class="text-xs font-semibold text-gray-500 uppercase tracking-wider">Email Address</label>
+                    <input type="email" id="prof-email" placeholder="john@example.com" class="w-full border rounded-lg p-3 outline-none focus:ring-2 focus:ring-blue-500 bg-gray-50">
                 </div>
-            </main>
-
+                <div class="space-y-1">
+                    <label class="text-xs font-semibold text-gray-500 uppercase tracking-wider">Avatar URL</label>
+                    <input type="text" id="prof-avatar-url" oninput="updateModalAvatarPreview(this.value)" placeholder="https://link-to-your-image.com/img.jpg" class="w-full border rounded-lg p-3 outline-none focus:ring-2 focus:ring-blue-500 bg-gray-50 text-sm">
+                    <p class="text-[10px] text-gray-400 pt-1">Provide a link to an image. Leave empty for monogram.</p>
+                </div>
+            </div>
+            <div class="bg-gray-50 p-6 border-t flex justify-end space-x-3">
+                <button onclick="closeProfileModal()" class="px-5 py-2.5 rounded-lg text-gray-600 hover:bg-gray-100 font-medium transition">Cancel</button>
+                <button onclick="saveProfile()" id="btn-save-profile" class="bg-blue-600 text-white px-8 py-2.5 rounded-lg font-bold hover:bg-blue-700 transition flex items-center gap-2">
+                    <i class="fas fa-save"></i><span>Save Changes</span>
+                </button>
+            </div>
         </div>
     </div>
 
     <script>
-        const API_BASE_URL = "http://127.0.0.1:8000/api";
-        let AUTH_TOKEN = "";
+        const API = "http://127.0.0.1:8000/api";
         let CURRENT_USER_ID = "";
+        let ACCESS_TOKEN = ""; // TOKEN MENTÉSE
 
-        function toggleAuth() {
-            document.getElementById('form-login').classList.toggle('hidden');
-            document.getElementById('form-register').classList.toggle('hidden');
+        // --- AUTH ---
+        function toggleAuth() { 
+            document.getElementById('form-login').classList.toggle('hidden'); 
+            document.getElementById('form-register').classList.toggle('hidden'); 
         }
 
         async function doRegister() {
-            const name = document.getElementById('reg-name').value.trim();
-            const email = document.getElementById('reg-email').value.trim();
-            const password = document.getElementById('reg-pass').value.trim();
-            const btn = document.getElementById('btn-reg-submit');
-
-            if (!name || !email || !password) return alert("Please fill out all fields.");
-
-            btn.disabled = true;
-            btn.innerText = "Registering...";
-
-            try {
-                const res = await fetch(`${API_BASE_URL}/register`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ username: name, email: email, password: password })
-                });
-                const result = await res.json();
-                
-                if (res.ok) {
-                    alert("Registration successful! Please log in.");
-                    toggleAuth();
-                    document.getElementById('log-email').value = email;
-                    document.getElementById('reg-pass').value = '';
-                } else {
-                    alert("Error: " + (result.detail || "Registration failed"));
-                }
-            } catch (err) {
-                alert("Connection error. Is your FastAPI server running?");
-            } finally {
-                btn.disabled = false;
-                btn.innerText = "Register";
-            }
+            const d = { username: document.getElementById('reg-name').value, email: document.getElementById('reg-email').value, password: document.getElementById('reg-pass').value };
+            const r = await fetch(`${API}/register`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(d) });
+            if(r.ok) { alert("Registration successful! You can now log in."); toggleAuth(); }
+            else { const err = await r.json(); alert(err.detail || "Registration failed."); }
         }
 
         async function doLogin() {
-            const email = document.getElementById('log-email').value.trim();
-            const password = document.getElementById('log-pass').value.trim();
-            const btn = document.getElementById('btn-login-submit');
+            const d = { email: document.getElementById('log-email').value, password: document.getElementById('log-pass').value };
+            const r = await fetch(`${API}/login`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(d) });
+            const res = await r.json();
+            if(r.ok) { 
+                CURRENT_USER_ID = res.user_id; 
+                ACCESS_TOKEN = res.access_token; // Token mentése a védett végpontokhoz
+                document.getElementById('login-screen').classList.add('hidden'); 
+                document.getElementById('app-wrapper').classList.remove('hidden'); 
+                loadProfile(); // A profil betöltése
+            } else alert("Login failed");
+        }
 
-            if (!email || !password) return alert("Please enter email and password.");
-
-            btn.disabled = true;
-            btn.innerText = "Authenticating...";
-
+        // --- --- --- PROFIL FUNKCIÓK --- --- ---
+        async function loadProfile() {
             try {
-                const res = await fetch(`${API_BASE_URL}/login`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ email: email, password: password })
+                const r = await fetch(`${API}/profile/me`, { headers: { 'Authorization': `Bearer ${ACCESS_TOKEN}` } });
+                const user = await r.json();
+                if(!r.ok) throw new Error(user.detail);
+
+                document.getElementById('sidebar-display-username').innerText = user.username;
+                if(user.full_name) {
+                    document.getElementById('sidebar-display-fullname').innerText = user.full_name;
+                    document.getElementById('sidebar-display-fullname').classList.remove('hidden');
+                } else {
+                    document.getElementById('sidebar-display-fullname').classList.add('hidden');
+                }
+                renderAvatar('sidebar-avatar-container', user.avatar_url, user.username);
+            } catch(e) { console.error("Profile load failed", e); }
+        }
+
+        function renderAvatar(containerId, url, username) {
+            const container = document.getElementById(containerId);
+            container.innerHTML = "";
+            if(url && url.trim() !== "") {
+                const img = document.createElement('img');
+                img.src = url;
+                img.alt = username;
+                img.className = "w-full h-full object-cover";
+                img.onerror = () => renderMonogram(container, username);
+                container.appendChild(img);
+            } else {
+                renderMonogram(container, username);
+            }
+        }
+
+        function renderMonogram(container, username) {
+            container.innerHTML = `<span class="text-xl font-bold text-white uppercase">${username.substring(0, 2)}</span>`;
+        }
+
+        function openProfileModal() {
+            fetch(`${API}/profile/me`, { headers: { 'Authorization': `Bearer ${ACCESS_TOKEN}` } })
+                .then(r => r.json())
+                .then(user => {
+                    document.getElementById('prof-full-name').value = user.full_name || "";
+                    document.getElementById('prof-email').value = user.email || "";
+                    document.getElementById('prof-avatar-url').value = user.avatar_url || "";
+                    updateModalAvatarPreview(user.avatar_url, user.username);
+                    document.getElementById('profile-modal').classList.remove('hidden');
                 });
-                const result = await res.json();
-
-                if (res.ok) {
-                    AUTH_TOKEN = result.access_token; 
-                    CURRENT_USER_ID = result.user_id;
-                    
-                    document.getElementById('display-user-id').innerText = result.username;
-                    document.getElementById('login-screen').classList.add('hidden');
-                    document.getElementById('app-wrapper').classList.remove('hidden');
-                    document.getElementById('log-pass').value = '';
-                } else {
-                    alert("Login failed: " + (result.detail || "Invalid credentials"));
-                }
-            } catch (err) {
-                alert("Connection error. Is your FastAPI server running?");
-            } finally {
-                btn.disabled = false;
-                btn.innerText = "Log In";
-            }
         }
 
-        function logout() {
-            AUTH_TOKEN = "";
-            CURRENT_USER_ID = "";
-            document.getElementById('app-wrapper').classList.add('hidden');
-            document.getElementById('login-screen').classList.remove('hidden');
-            switchView('chat');
-            document.getElementById('chat-container').innerHTML = `
-                <div class="flex justify-start">
-                    <div class="bg-gray-50 border border-gray-200 p-4 rounded-2xl rounded-tl-sm max-w-2xl shadow-sm text-gray-700">
-                        Hello! I am your InfoBank Assistant. You can ask me questions about your uploaded documents. My answers are strictly grounded in your personal data treasure.
-                    </div>
-                </div>`;
+        function closeProfileModal() { document.getElementById('profile-modal').classList.add('hidden'); }
+
+        function updateModalAvatarPreview(url) {
+            const username = document.getElementById('sidebar-display-username').innerText;
+            renderAvatar('modal-avatar-preview', url, username);
         }
 
-        //NAVIGATION LOGIC
-        function switchView(viewId) {
-            document.querySelectorAll('.view-section').forEach(el => el.classList.add('hidden'));
-            document.getElementById('view-' + viewId).classList.remove('hidden');
-            
-            document.querySelectorAll('.nav-btn').forEach(btn => {
-                btn.classList.remove('bg-blue-50', 'text-blue-700');
-                btn.classList.add('text-gray-600', 'hover:bg-gray-100');
-            });
-            
-            const activeBtn = document.getElementById('btn-' + viewId);
-            activeBtn.classList.remove('text-gray-600', 'hover:bg-gray-100');
-            activeBtn.classList.add('bg-blue-50', 'text-blue-700');
-
-            if (viewId === 'map') loadKnowledgeMap();
-            if (viewId === 'manager') loadDocuments();
-        }
-
-        //DASHBOARD LOGICS
-        async function loadKnowledgeMap() {
-            const container = document.getElementById('map-container');
-            container.innerHTML = '<div class="text-gray-400"><i class="fas fa-spinner fa-spin mr-2"></i>Loading Map...</div>';
-            
+        async function saveProfile() {
+            const btn = document.getElementById('btn-save-profile');
+            const data = {
+                full_name: document.getElementById('prof-full-name').value,
+                email: document.getElementById('prof-email').value,
+                avatar_url: document.getElementById('prof-avatar-url').value
+            };
+            btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i> Saving...';
             try {
-                const res = await fetch(`${API_BASE_URL}/knowledge-map/${CURRENT_USER_ID}`);
-                const data = await res.json();
-                
-                if (data.status === "success" && data.map.length > 0) {
-                    container.innerHTML = '';
-                    const styles = [
-                        "bg-blue-100 text-blue-800", "bg-indigo-50 text-indigo-700", 
-                        "bg-purple-100 text-purple-800", "bg-gray-100 text-gray-600", 
-                        "bg-green-50 text-green-700", "bg-yellow-50 text-yellow-700"
-                    ];
-                    
-                    data.map.forEach((item, index) => {
-                        let sizeClass = "text-sm px-3 py-1";
-                        if (item.count > 1) sizeClass = "text-base font-medium px-4 py-2";
-                        if (item.count > 3) sizeClass = "text-xl font-bold px-5 py-2";
-                        if (item.count > 5) sizeClass = "text-2xl font-extrabold px-6 py-3 shadow-md";
-                        
-                        const styleClass = styles[index % styles.length];
-                        container.innerHTML += `<span class="${sizeClass} ${styleClass} rounded-full cursor-pointer hover:scale-105 transition-transform">${item.keyword} (${item.count})</span>`;
-                    });
-                } else {
-                    container.innerHTML = '<div class="text-gray-500">Your InfoBank is empty. Upload some documents first!</div>';
-                }
-            } catch (err) {
-                container.innerHTML = '<div class="text-red-500">Failed to load Knowledge Map.</div>';
-            }
+                const r = await fetch(`${API}/profile/update`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${ACCESS_TOKEN}` },
+                    body: JSON.stringify(data)
+                });
+                if(r.ok) { alert("Profile updated successfully!"); closeProfileModal(); loadProfile(); } 
+                else { const err = await r.json(); alert("Update failed: " + err.detail); }
+            } catch(e) { alert("Server error."); }
+            finally { btn.disabled = false; btn.innerHTML = '<i class="fas fa-save"></i><span>Save Changes</span>'; }
         }
 
-        async function loadDocuments() {
-            const tbody = document.getElementById('docs-tbody');
-            tbody.innerHTML = '<tr><td colspan="4" class="px-6 py-4 text-center text-gray-400"><i class="fas fa-spinner fa-spin mr-2"></i>Loading Documents...</td></tr>';
+        // --- NAVIGATION ---
+        function switchView(v) {
+            document.querySelectorAll('.view-section').forEach(s => s.classList.add('hidden'));
+            document.getElementById('view-'+v).classList.remove('hidden');
+            document.getElementById('chat-bar').style.display = (v === 'chat' ? 'block' : 'none');
+            document.getElementById('view-title').innerText = v === 'ontology' ? 'Smart Ontology' : v.charAt(0).toUpperCase() + v.slice(1);
             
-            try {
-                const res = await fetch(`${API_BASE_URL}/documents/${CURRENT_USER_ID}`);
-                const data = await res.json();
-                
-                if (data.status === "success" && data.documents.length > 0) {
-                    tbody.innerHTML = '';
-                    data.documents.forEach(doc => {
-                        let permColor = "bg-gray-100 text-gray-800";
-                        if (doc.permission === "Owner") permColor = "bg-green-100 text-green-800";
-                        if (doc.permission === "Reader") permColor = "bg-blue-100 text-blue-800";
-                        if (doc.permission === "Aggregate") permColor = "bg-yellow-100 text-yellow-800";
-
-                        const kwHtml = doc.keywords.length > 0 
-                            ? doc.keywords.map(k => `<span class="mr-1 mb-1 inline-block text-xs text-gray-500 bg-gray-50 border border-gray-200 px-1 rounded shadow-sm">${k}</span>`).join('') 
-                            : '<span class="text-gray-400 italic text-xs">No keywords</span>';
-
-                        tbody.innerHTML += `
-                            <tr class="hover:bg-gray-50 transition">
-                                <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
-                                    <i class="far fa-file-pdf text-red-500 mr-2"></i>${doc.file_name}
-                                </td>
-                                <td class="px-6 py-4 text-sm text-gray-500 flex flex-wrap max-w-xs">${kwHtml}</td>
-                                <td class="px-6 py-4 whitespace-nowrap">
-                                    <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${permColor}">${doc.permission}</span>
-                                </td>
-                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${doc.upload_date}</td>
-                            </tr>
-                        `;
-                    });
-                } else {
-                    tbody.innerHTML = '<tr><td colspan="4" class="px-6 py-4 text-center text-gray-500">No documents found.</td></tr>';
-                }
-            } catch (err) {
-                tbody.innerHTML = '<tr><td colspan="4" class="px-6 py-4 text-center text-red-500">Failed to load documents.</td></tr>';
-            }
+            document.querySelectorAll('.nav-btn').forEach(b => b.classList.replace('bg-blue-50', 'text-gray-600'));
+            document.getElementById('btn-'+v).classList.replace('text-gray-600', 'bg-blue-50');
+            document.getElementById('btn-'+v).classList.add('text-blue-700');
+            
+            if(v==='map') loadMap(); 
+            if(v==='manager') loadDocs();
+            if(v==='ontology') loadOntology();
         }
 
-        // UPLOAD LOGIC
-        async function uploadDocument() {
+        // --- FILE SELECTION UX ---
+        function updateFileLabel() {
             const fileInput = document.getElementById('upload-file');
-            const permInput = document.getElementById('upload-permission');
-            const btn = document.getElementById('upload-btn');
-            
-            if (fileInput.files.length === 0) return alert("Please select a PDF file first.");
-
-            const formData = new FormData();
-            formData.append("file", fileInput.files[0]);
-            formData.append("user_id", CURRENT_USER_ID);
-            formData.append("permission_type", permInput.value);
-
-            btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i> Uploading & Vectorizing...';
-            btn.disabled = true;
-
-            try {
-                const response = await fetch(`${API_BASE_URL}/upload`, {
-                    method: 'POST',
-                    body: formData
-                });
-                const data = await response.json();
-
-                if (response.ok && data.status === "success") {
-                    document.getElementById('upload-result').classList.remove('hidden');
-                    const kwContainer = document.getElementById('upload-keywords');
-                    kwContainer.innerHTML = ''; 
-                    
-                    data.keywords.forEach(kw => {
-                        kwContainer.innerHTML += `<span class="px-3 py-1 bg-white border border-green-300 text-green-800 rounded-full text-sm font-medium shadow-sm">${kw}</span>`;
-                    });
-                    fileInput.value = ""; 
-                } else {
-                    alert("Error: " + (data.detail || "Upload failed"));
-                }
-            } catch (error) {
-                alert("Connection error to API. Check backend console.");
-            } finally {
-                btn.innerHTML = '<span>Process & Ingest</span>';
-                btn.disabled = false;
+            const btn = document.getElementById('btn-select-pdf');
+            if (fileInput.files.length > 0) {
+                btn.innerHTML = `<i class="far fa-file-pdf text-red-500 mr-2"></i>${fileInput.files[0].name}`;
+                btn.classList.replace('text-blue-600', 'text-gray-800');
+            } else {
+                btn.innerHTML = "Select PDF";
+                btn.classList.replace('text-gray-800', 'text-blue-600');
             }
         }
 
-        //CHAT LOGIC
-        function handleChatKeyPress(e) {
-            if (e.key === 'Enter') askQuestion();
+        function resetUploadUX() {
+            document.getElementById('upload-file').value = "";
+            updateFileLabel();
+            const btn = document.getElementById('btn-upload');
+            btn.disabled = false;
+            btn.innerText = "Upload & Ingest";
         }
 
-        function addMessageToChat(role, content, meta = null) {
-            const container = document.getElementById('chat-container');
-            
-            if (role === 'user') {
-                container.innerHTML += `
-                    <div class="flex justify-end mb-2">
-                        <div class="bg-blue-600 text-white p-4 rounded-2xl rounded-tr-sm max-w-2xl shadow-sm">
-                            <p>${content}</p>
-                        </div>
-                    </div>`;
-            } else if (role === 'bot') {
-                let filterHtml = "";
-                if (meta && meta.keywords) {
-                    filterHtml = `
-                        <div class="flex items-center space-x-2 mb-3 pb-3 border-b border-gray-100 text-xs text-gray-500">
-                            <i class="fas fa-filter text-blue-500"></i>
-                            <span>Extracted routing keywords:</span>
-                            ${meta.keywords.map(k => `<span class="px-2 py-0.5 bg-gray-100 border border-gray-200 rounded text-gray-700 shadow-sm">${k}</span>`).join('')}
-                        </div>`;
-                }
-                
-                const formattedContent = content.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
-
-                container.innerHTML += `
-                    <div class="flex justify-start mb-2">
-                        <div class="bg-white border border-gray-200 p-5 rounded-2xl rounded-tl-sm max-w-3xl shadow-sm">
-                            ${filterHtml}
-                            <div class="text-gray-800 text-sm md:text-base leading-relaxed">
-                                <p style="white-space: pre-wrap;">${formattedContent}</p>
-                            </div>
-                        </div>
-                    </div>`;
-            } else if (role === 'governance') {
-                container.innerHTML += `
-                    <div class="flex justify-start opacity-90 mb-2">
-                        <div class="bg-red-50 border-l-4 border-red-500 p-4 rounded-r-lg max-w-2xl shadow-sm">
-                            <h3 class="text-sm font-bold text-red-800"><i class="fas fa-shield-alt mr-2"></i>Governance Control Triggered</h3>
-                            <p class="text-sm text-red-700 mt-1">${content}</p>
-                        </div>
-                    </div>`;
-            }
-            container.scrollTop = container.scrollHeight;
-        }
-
+        // --- CHAT LOGIC ---
+        function handleChatKeyPress(e) { if (e.key === 'Enter') askQuestion(); }
         function showTyping() {
-            const container = document.getElementById('chat-container');
-            container.innerHTML += `
-                <div id="typing-bubble" class="flex justify-start mb-2">
-                    <div class="bg-white border border-gray-200 p-4 rounded-2xl rounded-tl-sm shadow-sm typing-indicator">
-                        <span></span><span></span><span></span>
-                    </div>
-                </div>`;
-            container.scrollTop = container.scrollHeight;
+            const box = document.getElementById('view-chat');
+            box.innerHTML += `<div id="typing-bubble" class="flex justify-start w-full mb-2"><div class="bg-white border border-gray-200 p-4 rounded-2xl rounded-tl-none shadow-sm typing-indicator"><span></span><span></span><span></span></div></div>`;
+            box.scrollTop = box.scrollHeight;
         }
-
-        function removeTyping() {
-            const bubble = document.getElementById('typing-bubble');
-            if (bubble) bubble.remove();
-        }
+        function removeTyping() { const b = document.getElementById('typing-bubble'); if(b) b.remove(); }
 
         async function askQuestion() {
             const input = document.getElementById('chat-input');
+            const box = document.getElementById('view-chat');
             const btn = document.getElementById('btn-send-chat');
-            const question = input.value.trim();
-            if (!question) return;
+            const q = input.value.trim(); if(!q) return;
 
-            addMessageToChat('user', question);
-            input.value = '';
-            showTyping();
-            
-            btn.disabled = true;
-            input.disabled = true;
+            box.innerHTML += `<div class="flex justify-end w-full mb-2"><div class="bg-blue-600 text-white p-3 px-5 rounded-2xl rounded-tr-none max-w-[80%] md:max-w-2xl shadow-sm text-sm">${q}</div></div>`;
+            input.value = ""; input.disabled = true; btn.disabled = true;
+            box.scrollTop = box.scrollHeight; showTyping();
 
-            const formData = new FormData();
-            formData.append("question", question);
-            formData.append("user_id", CURRENT_USER_ID);
-
+            const fd = new FormData(); fd.append("question", q); fd.append("user_id", CURRENT_USER_ID);
             try {
-                const response = await fetch(`${API_BASE_URL}/ask`, {
-                    method: 'POST',
-                    body: formData
-                });
-                const data = await response.json();
-                removeTyping();
+                const r = await fetch(`${API}/ask`, { method: 'POST', body: fd });
+                const res = await r.json(); removeTyping();
+                if (r.ok) {
+                    if (res.status === "success") {
+                        const formattedText = res.answer.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
 
-                if (response.ok) {
-                    if (data.status === "success") {
-                        addMessageToChat('bot', data.answer, { keywords: data.extracted_keywords });
-                    } else if (data.status === "controlled_failure") {
-                        addMessageToChat('governance', data.message);
+                        let sourcesHTML = "";
+                        if (res.sources && res.sources.length > 0) {
+                            let srcBlocks = res.sources.map(src => `
+                                <div class="bg-gray-50 p-3 rounded-lg text-xs text-gray-600 border border-gray-200 shadow-sm">
+                                    <div class="font-bold text-gray-700 mb-1 flex items-center gap-1">
+                                        <i class="far fa-file-pdf text-red-500"></i> ${src.file_name}
+                                    </div>
+                                    <div class="italic leading-relaxed max-h-24 overflow-y-auto pr-1 text-[11px]">
+                                        "${src.text}"
+                                    </div>
+                                </div>
+                            `).join('');
+
+                            sourcesHTML = `
+                                <div class="mt-4 pt-3 border-t border-gray-100">
+                                    <details class="group">
+                                        <summary class="text-xs text-blue-500 font-bold cursor-pointer list-none flex items-center gap-1 hover:text-blue-700 transition">
+                                            <i class="fas fa-chevron-down transition-transform duration-300 group-open:rotate-180"></i>
+                                            View Retrieved Sources
+                                        </summary>
+                                        <div class="mt-3 space-y-2">
+                                            ${srcBlocks}
+                                        </div>
+                                    </details>
+                                </div>
+                            `;
+                        }
+                        box.innerHTML += `
+                            <div class="flex justify-start w-full mb-2">
+                                <div class="bg-white border border-gray-200 p-5 rounded-2xl rounded-tl-none max-w-[80%] md:max-w-2xl text-gray-800 shadow-sm text-sm leading-relaxed">
+                                    <div class="flex items-center space-x-2 mb-3 pb-3 border-b border-gray-100 text-[10px] text-gray-500 uppercase tracking-widest font-bold">
+                                        <i class="fas fa-filter text-blue-500"></i>
+                                        <span>Semantic Routing: ${res.extracted_keywords?.join(', ') || 'N/A'}</span>
+                                    </div>
+                                    <p style="white-space: pre-wrap;">${formattedText}</p>
+                                    ${sourcesHTML} </div>
+                            </div>`;
+                    } else if (res.status === "controlled_failure") {
+                        box.innerHTML += `<div class="flex justify-start w-full mb-2"><div class="bg-red-50 border-l-4 border-red-500 p-4 rounded-r-2xl max-w-[80%] md:max-w-xl text-red-800 shadow-sm text-sm"><h3 class="font-bold mb-1"><i class="fas fa-shield-alt mr-2"></i>Governance Control</h3><p>${res.message}</p></div></div>`;
                     }
-                } else {
-                    addMessageToChat('governance', data.detail || "System Error");
+                } else box.innerHTML += `<div class="flex justify-start w-full mb-2"><div class="bg-red-50 text-red-800 p-3 rounded-2xl max-w-xl text-sm">Error: ${res.detail || "Unknown"}</div></div>`;
+            } catch(e) { removeTyping(); box.innerHTML += `<div class="flex justify-start w-full mb-2"><div class="bg-red-50 text-red-800 p-3 rounded-2xl max-w-xl text-sm">Connection Error.</div></div>`; }
+            finally { input.disabled = false; btn.disabled = false; input.focus(); box.scrollTop = box.scrollHeight; }
+        }
+
+        // --- DOCUMENT MANAGEMENT ---
+        async function uploadDocument() {
+            const fd = new FormData(); const fileInput = document.getElementById('upload-file');
+            if(!fileInput.files[0]) return alert("Please select a file first.");
+
+            fd.append("file", fileInput.files[0]); fd.append("user_id", CURRENT_USER_ID); fd.append("permission_type", document.getElementById('upload-permission').value);
+            const btn = document.getElementById('btn-upload'); btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i> Ingesting...';
+            
+            try {
+                const r = await fetch(`${API}/upload`, { method: 'POST', body: fd });
+                if(r.ok) { alert("Document vectorized successfully!"); loadDocs(); } 
+                else { const err = await r.json(); alert("Error: " + err.detail); }
+            } catch(e) { alert("Upload failed."); }
+            resetUploadUX();
+        }
+
+        async function loadDocs() {
+            const r = await fetch(`${API}/documents/${CURRENT_USER_ID}`); const data = await r.json();
+            const tbody = document.getElementById('docs-tbody'); tbody.innerHTML = "";
+            data.documents.forEach(doc => {
+                const isOwner = doc.permission === "Owner";
+                const iconClass = isOwner ? 'fa-trash-alt' : 'fa-unlink';
+                const iconTitle = isOwner ? 'Permanent Delete' : 'Unsubscribe';
+                tbody.innerHTML += `
+                    <tr class="hover:bg-gray-50 transition">
+                        <td class="px-6 py-4 font-medium text-gray-800 whitespace-nowrap"><i class="far fa-file-pdf text-red-500 mr-2"></i>${doc.file_name}</td>
+                        <td class="px-6 py-4"><div class="flex items-center space-x-2"><input type="text" id="kw-${doc.document_id}" value="${doc.keywords.join(', ')}" class="flex-1 border border-gray-300 rounded-md px-3 py-1.5 text-xs outline-none focus:ring-2 focus:ring-blue-400"><button onclick="saveKW('${doc.document_id}')" class="text-white bg-blue-500 hover:bg-blue-600 rounded-md p-1.5 transition"><i class="fas fa-save"></i></button></div></td>
+                        <td class="px-6 py-4"><select onchange="savePerm('${doc.document_id}',this.value)" ${!isOwner?'disabled':''} class="text-xs border border-gray-300 rounded-md p-2 outline-none ${!isOwner?'opacity-50 cursor-not-allowed bg-gray-100':'bg-white focus:ring-2 focus:ring-blue-400'}"><option value="Owner" ${doc.permission==='Owner'?'selected':''}>Owner</option><option value="Reader" ${doc.permission==='Reader'?'selected':''}>Reader</option><option value="Aggregate" ${doc.permission==='Aggregate'?'selected':''}>Aggregate</option></select></td>
+                        <td class="px-6 py-4 text-center"><button onclick="deleteDoc('${doc.document_id}', '${isOwner}')" class="text-gray-400 hover:text-red-600 transition" title="${iconTitle}"><i class="fas ${iconClass}"></i></button></td>
+                    </tr>`;
+            });
+        }
+
+        async function saveKW(id) { const fd = new FormData(); fd.append("doc_id", id); fd.append("keywords", document.getElementById('kw-'+id).value); await fetch(`${API}/documents/update-keywords`, { method: 'POST', body: fd }); alert("Keywords updated!"); }
+        async function savePerm(id, p) { const fd = new FormData(); fd.append("doc_id", id); fd.append("user_id", CURRENT_USER_ID); fd.append("new_perm", p); await fetch(`${API}/documents/update-permission`, { method: 'POST', body: fd }); alert("Permission updated!"); loadDocs(); }
+
+        async function deleteDoc(id, isOwnerStr) {
+            const isOwner = isOwnerStr === 'true';
+            if (!confirm(isOwner ? "WARNING: Permanently delete document and AI vectors?" : "Unsubscribe from document?")) return;
+            const fd = new FormData(); fd.append("doc_id", id); fd.append("user_id", CURRENT_USER_ID); 
+            try { const r = await fetch(`${API}/documents/delete`, { method: 'DELETE', body: fd }); if(r.ok) { loadDocs(); loadMap(); } else alert("Error"); } catch(e) { alert("Server error"); }
+        }
+
+        // --- MAP LOGIC ---
+        async function loadMap() {
+            const r = await fetch(`${API}/knowledge-map/${CURRENT_USER_ID}`); const data = await r.json();
+            const box = document.getElementById('view-map'); box.innerHTML = "";
+            if (data.map.length === 0) return box.innerHTML = '<div class="text-gray-500">Empty map.</div>';
+            data.map.forEach(k => {
+                let s = k.count > 3 ? "text-xl font-bold py-3 px-6 shadow-md" : (k.count > 1 ? "text-base font-semibold py-2 px-5" : "text-sm py-2 px-4");
+                box.innerHTML += `<span class="${s} bg-white border border-blue-200 text-blue-700 rounded-full hover:scale-110 transition cursor-default shadow-sm m-1">${k.keyword} <span class="bg-blue-100 text-blue-800 text-xs px-2 py-0.5 rounded-full ml-1">${k.count}</span></span>`;
+            });
+        }
+
+        // --- D3 ONTOLOGY LOGIC ---
+        async function loadOntology() {
+            const container = document.getElementById('view-ontology');
+            container.innerHTML = '<div class="absolute inset-0 flex items-center justify-center"><i class="fas fa-circle-notch fa-spin text-3xl text-blue-500"></i></div>';
+            
+            try {
+                const r = await fetch(`${API}/ontology/${CURRENT_USER_ID}`);
+                const data = await r.json();
+                container.innerHTML = ""; 
+
+                if (!data.nodes || data.nodes.length === 0) {
+                    container.innerHTML = '<div class="absolute inset-0 flex items-center justify-center text-gray-500">Upload documents to build your Ontology.</div>';
+                    return;
+                }
+
+                const width = container.clientWidth;
+                const height = container.clientHeight;
+
+                const svg = d3.select("#view-ontology").append("svg")
+                    .attr("width", "100%")
+                    .attr("height", "100%")
+                    .call(d3.zoom().scaleExtent([0.5, 3]).on("zoom", (e) => svgGroup.attr("transform", e.transform)));
+
+                const svgGroup = svg.append("g");
+
+                const simulation = d3.forceSimulation(data.nodes)
+                    .force("link", d3.forceLink(data.links).id(d => d.id).distance(150))
+                    .force("charge", d3.forceManyBody().strength(-400))
+                    .force("center", d3.forceCenter(width / 2, height / 2))
+                    .force("collide", d3.forceCollide().radius(d => 20 + (d.val * 5)));
+
+                const link = svgGroup.append("g")
+                    .selectAll("line")
+                    .data(data.links)
+                    .join("line")
+                    .attr("stroke", "#94a3b8")
+                    .attr("stroke-opacity", 0.6)
+                    .attr("stroke-width", d => Math.sqrt(d.value) * 2);
+
+                const node = svgGroup.append("g")
+                    .selectAll("g")
+                    .data(data.nodes)
+                    .join("g")
+                    .call(d3.drag()
+                        .on("start", dragstarted)
+                        .on("drag", dragged)
+                        .on("end", dragended));
+
+                node.append("circle")
+                    .attr("r", d => 15 + (d.val * 4))
+                    .attr("fill", "#3b82f6")
+                    .attr("stroke", "#ffffff")
+                    .attr("stroke-width", 3)
+                    .attr("class", "shadow-lg");
+
+                node.append("text")
+                    .text(d => d.id)
+                    .attr("x", d => 20 + (d.val * 4))
+                    .attr("y", 5)
+                    .style("font-size", "14px")
+                    .style("font-weight", "600")
+                    .style("font-family", "Inter")
+                    .style("fill", "#1e293b")
+                    .style("pointer-events", "none");
+
+                simulation.on("tick", () => {
+                    link
+                        .attr("x1", d => d.source.x)
+                        .attr("y1", d => d.source.y)
+                        .attr("x2", d => d.target.x)
+                        .attr("y2", d => d.target.y);
+
+                    node.attr("transform", d => `translate(${d.x},${d.y})`);
+                });
+
+                function dragstarted(event, d) {
+                    if (!event.active) simulation.alphaTarget(0.3).restart();
+                    d.fx = d.x; d.fy = d.y;
+                }
+                function dragged(event, d) {
+                    d.fx = event.x; d.fy = event.y;
+                }
+                function dragended(event, d) {
+                    if (!event.active) simulation.alphaTarget(0);
+                    d.fx = null; d.fy = null;
                 }
             } catch (error) {
-                removeTyping();
-                addMessageToChat('governance', "API connection failed. Check console.");
-            } finally {
-                btn.disabled = false;
-                input.disabled = false;
-                input.focus();
+                console.error("Ontology load failed", error);
+                container.innerHTML = '<div class="absolute inset-0 flex items-center justify-center text-red-500">Failed to load Ontology.</div>';
             }
         }
     </script>
