@@ -1,0 +1,38 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+body { font-family: 'Inter', sans-serif; }
+.no-scrollbar::-webkit-scrollbar { display: none; }
+
+.typing-indicator span { 
+    animation: blink 1.4s infinite both; 
+    height: 6px; width: 6px; background: #3b82f6; 
+    border-radius: 50%; display: inline-block; margin: 0 1px; 
+}
+.typing-indicator span:nth-child(2) { animation-delay: 0.2s; }
+.typing-indicator span:nth-child(3) { animation-delay: 0.4s; }
+@keyframes blink { 0% { opacity: 0.2; } 20% { opacity: 1; } 100% { opacity: 0.2; } }
+
+#view-ontology { 
+    background-color: #f8fafc; 
+    user-select: none; 
+    -webkit-user-select: none; 
+}
+#view-ontology svg { cursor: grab !important; display: block; }
+#view-ontology svg:active { cursor: grabbing !important; }
+#view-ontology .node, #view-ontology .node circle { cursor: pointer !important; }
+#view-ontology .node:active, #view-ontology .node:active circle { cursor: grabbing !important; }
+
+.modal-backdrop { background-color: rgba(0, 0, 0, 0.5); backdrop-filter: blur(2px); transition: opacity 0.3s ease; }
+
+.autocomplete-wrapper { position: relative; width: 100%; }
+.autocomplete-dropdown { 
+    position: absolute; top: 100%; left: 0; right: 0; 
+    background-color: #fff; border: 1px solid #e5e7eb; border-radius: 0.5rem; 
+    box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1); 
+    z-index: 1000; max-height: 200px; overflow-y: auto; margin-top: 4px; 
+}
+.autocomplete-item { 
+    padding: 12px 16px; cursor: pointer; border-bottom: 1px solid #f3f4f6; 
+    display: flex; align-items: center; gap: 10px; font-size: 14px; color: #374151; 
+}
+.autocomplete-item:hover { background-color: #eff6ff; color: #1d4ed8; }
+.autocomplete-item:last-child { border-bottom: none; }
