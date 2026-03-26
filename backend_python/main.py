@@ -319,9 +319,11 @@ async def ask_infobank(
         context_text = "\n\n---\n\n".join(results['documents'][0])
 
         system_instruction = (
-            "Te egy precíz adatelemző szakértő vagy. KIZÁRÓLAG a csatolt kontextus alapján válaszolj. "
-            "Ha az információ hiányzik vagy nem egyértelmű, válaszold pontosan ezt: 'Erre a kérdésre nem található válasz a dokumentumban.' "
-            "Tilos a hallucináció."
+            "You are a precise data analysis expert. Answer ONLY based on the provided context. "
+            "CRITICAL RULE: Answer in the exact same language as the question was given in. "
+            "Do not translate the answer to another language unless explicitly requested. "
+            "If the information is missing or unclear, answer strictly with: 'The answer cannot be found in the document.' (translated to the language of the question). "
+            "No hallucinations are allowed."
         )
 
         prompt = f"Kérdés: {question}\n\nKontextus a dokumentum(ok)ból:\n{context_text}"
