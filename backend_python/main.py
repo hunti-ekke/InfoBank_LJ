@@ -78,12 +78,11 @@ def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 200) -> List[st
     return chunks
 
 def get_current_user_id(token: str = Depends(oauth2_scheme)):
-    """Dekódolja a JWT tokent és visszaadja a user_id-t (sub)."""
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         return payload.get("sub")
     except jwt.PyJWTError:
-        raise HTTPException(status_code=401, detail="Érvénytelen vagy lejárt token.")
+        raise HTTPException(status_code=401, detail="Token invalid or expired.")
 
 # --- AUTH ENDPOINTS ---
 
@@ -91,7 +90,7 @@ def get_current_user_id(token: str = Depends(oauth2_scheme)):
 def register_user(user_data: UserRegister, db: Session = Depends(get_db)):
     existing_user = db.query(models.User).filter(models.User.email == user_data.email).first()
     if existing_user:
-        raise HTTPException(status_code=400, detail="Ez az email cím már regisztrálva van.")
+        raise HTTPException(status_code=400, detail="Email already registered.")
     
     hashed_password = pwd_context.hash(user_data.password)
     new_user = models.User(
@@ -103,14 +102,14 @@ def register_user(user_data: UserRegister, db: Session = Depends(get_db)):
     db.add(new_user)
     db.commit()
     
-    return {"status": "success", "message": "Sikeres regisztráció!"}
+    return {"status": "success", "message": "Registration successful!"}
 
 @app.post("/api/login")
 def login_user(user_data: UserLogin, db: Session = Depends(get_db)):
     user = db.query(models.User).filter(models.User.email == user_data.email).first()
 
     if not user or not getattr(user, 'password_hash', None) or not pwd_context.verify(user_data.password, user.password_hash):
-        raise HTTPException(status_code=401, detail="Hibás email vagy jelszó.")
+        raise HTTPException(status_code=401, detail="Incorrect email or password.")
     
     token_data = {"sub": user.id, "email": user.email}
     token = jwt.encode(token_data, SECRET_KEY, algorithm=ALGORITHM)
@@ -126,10 +125,9 @@ def login_user(user_data: UserLogin, db: Session = Depends(get_db)):
 
 @app.get("/api/profile/me")
 def get_profile(user_id: str = Depends(get_current_user_id), db: Session = Depends(get_db)):
-    """Visszaadja a bejelentkezett felhasználó adatait."""
     user = db.query(models.User).filter(models.User.id == user_id).first()
     if not user:
-        raise HTTPException(status_code=404, detail="Felhasználó nem található.")
+        raise HTTPException(status_code=404, detail="User not found.")
     return {
         "username": user.username,
         "email": user.email,
@@ -144,10 +142,9 @@ def update_profile(
     user_id: str = Depends(get_current_user_id), 
     db: Session = Depends(get_db)
 ):
-    """Frissíti a bejelentkezett felhasználó profiladatait."""
     user = db.query(models.User).filter(models.User.id == user_id).first()
     if not user:
-        raise HTTPException(status_code=404, detail="Felhasználó nem található.")
+        raise HTTPException(status_code=404, detail="User not found.")
 
     if profile_data.full_name is not None:
         user.full_name = profile_data.full_name
@@ -157,7 +154,7 @@ def update_profile(
         user.avatar_url = profile_data.avatar_url
 
     db.commit()
-    return {"status": "success", "message": "Profil sikeresen frissítve."}
+    return {"status": "success", "message": "Profile updated."}
 
 # --- CORE ENDPOINTS ---
 
@@ -272,10 +269,10 @@ async def ask_infobank(
         question_keywords = [k.strip().lower() for k in kw_response.text.split(',') if k.strip()]
         
         matched_keywords = db.query(models.Keyword).filter(models.Keyword.word.in_(question_keywords)).all()
-        print(f"--- DEBUG: A Gemini ezeket a kulcsszavakat kereste: {question_keywords} ---")
+        print(f"--- DEBUG: Gemini searched for these keywords: {question_keywords} ---")
 
         if not matched_keywords:
-            return {"status": "controlled_failure", "message": "Nincs a kérdéshez kapcsolódó dokumentum az InfoBankban."}
+            return {"status": "controlled_failure", "message": "There is no document related to the question in the InfoBank."}
 
         kw_ids = [kw.id for kw in matched_keywords]
         matched_doc_records = db.query(models.DocumentKeyword.document_id).filter(
@@ -284,7 +281,7 @@ async def ask_infobank(
         candidate_doc_ids = [record[0] for record in matched_doc_records]
 
         if not candidate_doc_ids:
-            return {"status": "controlled_failure", "message": "Nincs a kérdéshez kapcsolódó dokumentum az InfoBankban."}
+            return {"status": "controlled_failure", "message": "There is no document related to the question in the InfoBank."}
 
         permissions = db.query(models.UserDocumentPermission).filter(
             models.UserDocumentPermission.user_id == user_id,
@@ -297,11 +294,11 @@ async def ask_infobank(
         if not direct_access_docs and aggregate_docs:
             return {
                 "status": "controlled_failure", 
-                "message": "Governance szabályok miatt a lekérdezés megtagadva: a dokumentumokhoz csak aggregált (anonym) hozzáférésed van."
+                "message": "Query denied (Governance rules): Aggregated (anonymous) access only."
             }
         
         if not direct_access_docs:
-            raise HTTPException(status_code=403, detail="Nincs jogosultságod a kérdéshez tartozó dokumentumok olvasásához.")
+            raise HTTPException(status_code=403, detail="No permission to view related documents.")
 
         emb_res = client.models.embed_content(model=EMBEDDING_MODEL, contents=question)
         question_vector = emb_res.embeddings[0].values
@@ -314,7 +311,7 @@ async def ask_infobank(
         )
 
         if not results['documents'] or not results['documents'][0]:
-            return {"status": "success", "answer": "Erre a kérdésre nem található válasz a dokumentumokban."}
+            return {"status": "success", "answer": "The answer cannot be found in the document."}
 
         context_text = "\n\n---\n\n".join(results['documents'][0])
 
@@ -326,7 +323,7 @@ async def ask_infobank(
             "No hallucinations are allowed."
         )
 
-        prompt = f"Kérdés: {question}\n\nKontextus a dokumentum(ok)ból:\n{context_text}"
+        prompt = f"Question: {question}\n\nContext from the document(s):\n{context_text}"
         response = client.models.generate_content(
             model=MODEL_NAME,
             contents=prompt,
@@ -341,7 +338,7 @@ async def ask_infobank(
             for chunk_text, meta in zip(results['documents'][0], results['metadatas'][0]):
                 doc_id = meta.get("document_id")
                 doc_record = db.query(models.Document).filter(models.Document.id == doc_id).first()
-                file_name = doc_record.file_path if doc_record else "Ismeretlen dokumentum"
+                file_name = doc_record.file_path if doc_record else "Unknown document"
                 
                 sources_list.append({
                     "file_name": file_name,
@@ -359,7 +356,7 @@ async def ask_infobank(
 
     except Exception as e:
         db.rollback()
-        print(f"HIBA AZ ASK VÉGPONTON: {str(e)}")
+        print(f"ERROR AT THE ASK ENDPOINT: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/test-db")
@@ -368,7 +365,6 @@ def test_db_connection(db: Session = Depends(get_db)):
 
 @app.get("/api/knowledge-map/{user_id}")
 def get_knowledge_map(user_id: str, db: Session = Depends(get_db)):
-    """Visszaadja a felhasználó kulcsszavait és azok előfordulási számát."""
     try:
         results = db.query(
             models.Keyword.word,
@@ -394,7 +390,6 @@ def get_knowledge_map(user_id: str, db: Session = Depends(get_db)):
 
 @app.get("/api/ontology/{user_id}")
 def get_ontology(user_id: str, db: Session = Depends(get_db)):
-    """Lekéri a kulcsszavakat és a köztük lévő kapcsolatokat (ugyanabban a doksiban szerepelnek)."""
     try:
         permissions = db.query(models.UserDocumentPermission).filter(
             models.UserDocumentPermission.user_id == user_id
@@ -441,7 +436,6 @@ def get_ontology(user_id: str, db: Session = Depends(get_db)):
 
 @app.get("/api/documents/{user_id}")
 def get_user_documents(user_id: str, db: Session = Depends(get_db)):
-    """Visszaadja a felhasználó összes dokumentumát, a jogokat és a kulcsszavakat."""
     try:
         permissions = db.query(models.UserDocumentPermission).filter(
             models.UserDocumentPermission.user_id == user_id
@@ -475,7 +469,6 @@ def get_user_documents(user_id: str, db: Session = Depends(get_db)):
 
 @app.post("/api/documents/update-keywords")
 def update_keywords(doc_id: str = Form(...), keywords: str = Form(...), db: Session = Depends(get_db)):
-    """Törli a régi kulcsszavakat és elmenti az újakat (vesszővel elválasztva)."""
     db.query(models.DocumentKeyword).filter(models.DocumentKeyword.document_id == doc_id).delete()
     
     new_kw_list = [k.strip() for k in keywords.split(',') if k.strip()]
@@ -497,7 +490,6 @@ def update_permission(
     new_perm: str = Form(...), 
     db: Session = Depends(get_db)
 ):
-    """Módosítja a jogosultságot, ha a user az 'Owner'."""
     perm_record = db.query(models.UserDocumentPermission).filter(
         models.UserDocumentPermission.document_id == doc_id,
         models.UserDocumentPermission.user_id == user_id
@@ -516,19 +508,18 @@ def delete_document(
     user_id: str = Form(...), 
     db: Session = Depends(get_db)
 ):
-    """Intelligens törlés, kezeli a leiratkozást és a teljes megsemmisítést is."""
     perm_record = db.query(models.UserDocumentPermission).filter(
         models.UserDocumentPermission.document_id == doc_id,
         models.UserDocumentPermission.user_id == user_id
     ).first()
 
     if not perm_record:
-        raise HTTPException(status_code=404, detail="Dokumentum vagy jogosultság nem található.")
+        raise HTTPException(status_code=404, detail="The requested document or permission could not be found.")
     
     if perm_record.permission_type != "Owner":
         db.delete(perm_record)
         db.commit()
-        return {"status": "success", "message": "Sikeresen leiratkoztál a dokumentumról."}
+        return {"status": "success", "message": "Successfully unsubscribed from the document."}
 
     try:
         try:
@@ -544,15 +535,14 @@ def delete_document(
             db.delete(doc)
         
         db.commit()
-        return {"status": "success", "message": "Dokumentum és vektorok véglegesen törölve."}
+        return {"status": "success", "message": "The document and its vectors have been permanently deleted."}
     
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Hiba a törlés során: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"An error occurred while deleting: {str(e)}")
 
 @app.get("/api/users/search")
 def search_users(q: str, db: Session = Depends(get_db)):
-    """Élő kereső (autocomplete) a felhasználónevekhez tulajdonjog átadásánál."""
     if not q or len(q) < 2:
         return {"status": "success", "users": []}
     
@@ -572,7 +562,6 @@ def transfer_document_ownership(
     new_username: str = Form(...),
     db: Session = Depends(get_db)
 ):
-    """Tulajdonjog átadása egy másik felhasználónak (A opció: régi tulaj elveszíti)."""
 
     current_perm = db.query(models.UserDocumentPermission).filter(
         models.UserDocumentPermission.document_id == doc_id,
@@ -580,14 +569,14 @@ def transfer_document_ownership(
     ).first()
 
     if not current_perm or current_perm.permission_type != models.PermissionType.Owner:
-        raise HTTPException(status_code=403, detail="Nincs jogosultságod átadni ezt a dokumentumot (csak Owner teheti).")
+        raise HTTPException(status_code=403, detail="You are not authorized to transfer this document (only the Owner can do so).")
 
     target_user = db.query(models.User).filter(models.User.username == new_username).first()
     if not target_user:
-        raise HTTPException(status_code=404, detail="A megadott felhasználó nem található a rendszerben.")
+        raise HTTPException(status_code=404, detail="The provided user was not found in the system.")
 
     if target_user.id == user_id:
-        raise HTTPException(status_code=400, detail="Saját magadnak nem adhatod át a dokumentumot.")
+        raise HTTPException(status_code=400, detail="You are not permitted to transfer this document to yourself.")
 
     existing_target_perm = db.query(models.UserDocumentPermission).filter(
         models.UserDocumentPermission.document_id == doc_id,
@@ -601,4 +590,4 @@ def transfer_document_ownership(
     
     db.commit()
     
-    return {"status": "success", "message": f"Tulajdonjog sikeresen átadva neki: {target_user.username}"}
+    return {"status": "success", "message": f"Ownership successfully transferred to the user: {target_user.username}"}

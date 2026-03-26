@@ -15,12 +15,18 @@
         .typing-indicator span:nth-child(2) { animation-delay: 0.2s; }
         .typing-indicator span:nth-child(3) { animation-delay: 0.4s; }
         @keyframes blink { 0% { opacity: 0.2; } 20% { opacity: 1; } 100% { opacity: 0.2; } }
-        /* D3 tooltip és kurzor stílusok */
-        #view-ontology svg { cursor: grab; }
-        #view-ontology svg:active { cursor: grabbing; }
-        /* Modal háttér elhomályosítás */
+        
+        #view-ontology { 
+            background-color: #f8fafc; 
+            user-select: none; 
+            -webkit-user-select: none; 
+        }
+        #view-ontology svg { cursor: grab !important; display: block; }
+        #view-ontology svg:active { cursor: grabbing !important; }
+        #view-ontology .node, #view-ontology .node circle { cursor: pointer !important; }
+        #view-ontology .node:active, #view-ontology .node:active circle { cursor: grabbing !important; }
+
         .modal-backdrop { background-color: rgba(0, 0, 0, 0.5); backdrop-filter: blur(2px); transition: opacity 0.3s ease; }
-        /* Autocomplete stílusok */
         .autocomplete-wrapper { position: relative; width: 100%; }
         .autocomplete-dropdown { position: absolute; top: 100%; left: 0; right: 0; background-color: #fff; border: 1px solid #e5e7eb; border-radius: 0.5rem; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1); z-index: 1000; max-height: 200px; overflow-y: auto; margin-top: 4px; }
         .autocomplete-item { padding: 12px 16px; cursor: pointer; border-bottom: 1px solid #f3f4f6; display: flex; align-items: center; gap: 10px; font-size: 14px; color: #374151; }
@@ -200,7 +206,7 @@
     <script>
         const API = "http://127.0.0.1:8000/api";
         let CURRENT_USER_ID = "";
-        let ACCESS_TOKEN = ""; // TOKEN MENTÉSE
+        let ACCESS_TOKEN = "";
 
         // --- AUTH ---
         function toggleAuth() { 
@@ -221,10 +227,10 @@
             const res = await r.json();
             if(r.ok) { 
                 CURRENT_USER_ID = res.user_id; 
-                ACCESS_TOKEN = res.access_token; // Token mentése a védett végpontokhoz
+                ACCESS_TOKEN = res.access_token;
                 document.getElementById('login-screen').classList.add('hidden'); 
                 document.getElementById('app-wrapper').classList.remove('hidden'); 
-                loadProfile(); // A profil betöltése
+                loadProfile(); 
             } else alert("Login failed");
         }
 
@@ -437,7 +443,6 @@
                 const iconClass = isOwner ? 'fa-trash-alt' : 'fa-unlink';
                 const iconTitle = isOwner ? 'Permanent Delete' : 'Unsubscribe';
                 
-                // Csak akkor jelenik meg az átadás gomb, ha a user az Owner
                 const transferBtn = isOwner ? `<button onclick="openTransferModal('${doc.document_id}')" class="text-blue-500 hover:text-blue-700 transition ml-3" title="Transfer Ownership"><i class="fas fa-exchange-alt"></i></button>` : '';
 
                 tbody.innerHTML += `
@@ -545,7 +550,7 @@
                     if (response.ok) {
                         alert(result.message);
                         closeTransferModal();
-                        loadDocs(); // Táblázat újratöltése (eltűnik a doksi a listából!)
+                        loadDocs();
                     } else {
                         alert("Error: " + result.detail);
                     }
@@ -613,6 +618,7 @@
                     .selectAll("g")
                     .data(data.nodes)
                     .join("g")
+                    .attr("class", "node")
                     .call(d3.drag()
                         .on("start", dragstarted)
                         .on("drag", dragged)
