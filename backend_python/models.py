@@ -23,6 +23,7 @@ class Document(Base):
     id = Column(String(255), primary_key=True)
     file_path = Column(String(512), nullable=False)
     upload_date = Column(TIMESTAMP, server_default=func.now())
+    visibility = Column(String(50), default="Private") 
     
     permissions = relationship("UserDocumentPermission", back_populates="document")
     chunks = relationship("DocumentChunk", back_populates="document")

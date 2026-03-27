@@ -1,6 +1,7 @@
 import os
 import uuid
 import time
+import datetime
 from typing import List
 from fastapi import FastAPI, Depends, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -26,7 +27,7 @@ load_dotenv()
 
 # GOOGLE AI 
 client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
-MODEL_NAME = "gemini-2.5-flash"
+MODEL_NAME = "gemini-3.1-flash-lite-preview"
 EMBEDDING_MODEL = "gemini-embedding-001"
 
 chroma_client = chromadb.PersistentClient(path="./chroma_data")
@@ -201,9 +202,14 @@ async def upload_document(
         keyword_list = list(set(raw_keywords))
 
         doc_id = str(uuid.uuid4())
-        db.add(models.Document(id=doc_id, file_path=file.filename))
+        
+        # LÁTHATÓSÁG ÉS JOGOSULTSÁG SZÉTVÁLASZTÁSA
+        doc_visibility = "Aggregate" if permission_type.value == "Aggregate" else "Private"
+        db.add(models.Document(id=doc_id, file_path=file.filename, visibility=doc_visibility))
+        
+        # A feltöltő MINDIG Owner marad a jogosultsági táblában!
         db.add(models.UserDocumentPermission(
-            id=str(uuid.uuid4()), user_id=user_id, document_id=doc_id, permission_type=permission_type
+            id=str(uuid.uuid4()), user_id=user_id, document_id=doc_id, permission_type=models.PermissionType.Owner
         ))
 
         for word in keyword_list:
@@ -283,27 +289,31 @@ async def ask_infobank(
         if not candidate_doc_ids:
             return {"status": "controlled_failure", "message": "There is no document related to the question in the InfoBank."}
 
-        permissions = db.query(models.UserDocumentPermission).filter(
+        # 1. Keresd meg a felhasználó SAJÁT (Owner, Reader) dokumentumait
+        user_permissions = db.query(models.UserDocumentPermission).filter(
             models.UserDocumentPermission.user_id == user_id,
             models.UserDocumentPermission.document_id.in_(candidate_doc_ids)
         ).all()
+        direct_access_docs = [p.document_id for p in user_permissions]
 
-        direct_access_docs = [p.document_id for p in permissions if p.permission_type in [models.PermissionType.Owner, models.PermissionType.Reader]]
-        aggregate_docs = [p.document_id for p in permissions if p.permission_type == models.PermissionType.Aggregate]
+        # 2. Keresd meg az ÖSSZES "Aggregate" láthatóságú dokumentumot a jelöltek közül
+        aggregate_docs_records = db.query(models.Document.id).filter(
+            models.Document.id.in_(candidate_doc_ids),
+            models.Document.visibility == "Aggregate"
+        ).all()
+        aggregate_docs = [r[0] for r in aggregate_docs_records]
 
-        if not direct_access_docs and aggregate_docs:
-            return {
-                "status": "controlled_failure", 
-                "message": "Query denied (Governance rules): Aggregated (anonymous) access only."
-            }
-        
-        if not direct_access_docs:
-            raise HTTPException(status_code=403, detail="No permission to view related documents.")
+        # 3. Egyesítsd a saját és a közös dokumentumokat (duplikációk kiszűrésével)
+        all_allowed_docs = list(set(direct_access_docs + aggregate_docs))
+
+        if not all_allowed_docs:
+            return {"status": "controlled_failure", "message": "There is no document related to the question in the InfoBank."}
 
         emb_res = client.models.embed_content(model=EMBEDDING_MODEL, contents=question)
         question_vector = emb_res.embeddings[0].values
 
-        where_clause = {"document_id": direct_access_docs[0]} if len(direct_access_docs) == 1 else {"document_id": {"$in": direct_access_docs}}
+        # Keresés a ChromaDB-ben csak az engedélyezett doksikon
+        where_clause = {"document_id": all_allowed_docs[0]} if len(all_allowed_docs) == 1 else {"document_id": {"$in": all_allowed_docs}}
         results = collection.query(
             query_embeddings=[question_vector],
             n_results=4,
@@ -349,7 +359,7 @@ async def ask_infobank(
             "status": "success",
             "question": question,
             "extracted_keywords": question_keywords,
-            "searched_documents_count": len(direct_access_docs),
+            "searched_documents_count": len(all_allowed_docs),
             "answer": response.text,
             "sources": sources_list
         }
@@ -454,11 +464,14 @@ def get_user_documents(user_id: str, db: Session = Depends(get_db)):
             ).all()
             
             keywords = [k[0] for k in kw_records]
+
+            display_perm = "Aggregate" if doc.visibility == "Aggregate" else p.permission_type.value
             
             doc_list.append({
                 "document_id": doc.id,
                 "file_name": doc.file_path,
-                "permission": p.permission_type,
+                "permission": display_perm,
+                "is_owner": p.permission_type.value == "Owner", # <--- EZT A SORT ADD HOZZÁ!
                 "keywords": keywords,
                 "upload_date": doc.upload_date.strftime("%Y-%m-%d %H:%M") if doc.upload_date else "N/A"
             })
@@ -495,10 +508,14 @@ def update_permission(
         models.UserDocumentPermission.user_id == user_id
     ).first()
 
-    if not perm_record or perm_record.permission_type != "Owner":
+    if not perm_record or perm_record.permission_type != models.PermissionType.Owner:
         raise HTTPException(status_code=403, detail="Only the Owner can change permissions.")
 
-    perm_record.permission_type = new_perm
+    # Ne a user "Owner" jogát írjuk felül, hanem a dokumentum láthatóságát!
+    doc = db.query(models.Document).filter(models.Document.id == doc_id).first()
+    if doc:
+        doc.visibility = "Aggregate" if new_perm == "Aggregate" else "Private"
+
     db.commit()
     return {"status": "success", "message": "Permission updated"}
 
@@ -516,7 +533,7 @@ def delete_document(
     if not perm_record:
         raise HTTPException(status_code=404, detail="The requested document or permission could not be found.")
     
-    if perm_record.permission_type != "Owner":
+    if perm_record.permission_type != models.PermissionType.Owner:
         db.delete(perm_record)
         db.commit()
         return {"status": "success", "message": "Successfully unsubscribed from the document."}

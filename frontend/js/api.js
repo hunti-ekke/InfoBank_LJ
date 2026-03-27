@@ -137,8 +137,8 @@ async function uploadDocument() {
 async function loadDocs() {
     const r = await fetch(`${API}/documents/${CURRENT_USER_ID}`); const data = await r.json();
     const tbody = document.getElementById('docs-tbody'); tbody.innerHTML = "";
-    data.documents.forEach(doc => {
-        const isOwner = doc.permission === "Owner";
+        data.documents.forEach(doc => {
+        const isOwner = doc.is_owner === true;
         const iconClass = isOwner ? 'fa-trash-alt' : 'fa-unlink';
         const iconTitle = isOwner ? 'Permanent Delete' : 'Unsubscribe';
         const transferBtn = isOwner ? `<button onclick="openTransferModal('${doc.document_id}')" class="text-blue-500 hover:text-blue-700 transition ml-3" title="Transfer Ownership"><i class="fas fa-exchange-alt"></i></button>` : '';
