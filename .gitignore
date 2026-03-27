@@ -5,3 +5,4 @@
 chroma_data/
 temp_*.pdf
 *.sqlite3
+*.db
