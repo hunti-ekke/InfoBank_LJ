@@ -20,7 +20,7 @@ from openai import OpenAI
 import models
 from database import engine, get_db
 
-from routers import auth
+from routers import auth, profile
 
 load_dotenv()
 
@@ -43,6 +43,7 @@ app.add_middleware(
 )
 
 app.include_router(auth.router)
+app.include_router(profile.router)
 
 
 def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 200) -> List[str]:
@@ -53,40 +54,6 @@ def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 200) -> List[st
         chunks.append(text[start:end])
         start += (chunk_size - overlap)
     return chunks
-
-
-@app.get("/api/profile/me")
-def get_profile(user_id: str = Depends(security.get_current_user_id), db: Session = Depends(get_db)):
-    user = db.query(models.User).filter(models.User.id == user_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found.")
-    return {
-        "username": user.username,
-        "email": user.email,
-        "full_name": getattr(user, 'full_name', None),
-        "avatar_url": getattr(user, 'avatar_url', None),
-        "users_in_db": db.query(models.User).count()
-    }
-
-@app.put("/api/profile/update")
-def update_profile(
-    profile_data: schemas.ProfileUpdate, 
-    user_id: str = Depends(security.get_current_user_id), 
-    db: Session = Depends(get_db)
-):
-    user = db.query(models.User).filter(models.User.id == user_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found.")
-
-    if profile_data.full_name is not None:
-        user.full_name = profile_data.full_name
-    if profile_data.email is not None:
-        user.email = profile_data.email
-    if profile_data.avatar_url is not None:
-        user.avatar_url = profile_data.avatar_url
-
-    db.commit()
-    return {"status": "success", "message": "Profile updated."}
 
 @app.post("/api/upload")
 async def upload_document(
@@ -486,20 +453,6 @@ def delete_document(
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"An error occurred while deleting: {str(e)}")
-
-@app.get("/api/users/search")
-def search_users(q: str, db: Session = Depends(get_db)):
-    if not q or len(q) < 2:
-        return {"status": "success", "users": []}
-    
-    users = db.query(models.User).filter(
-        models.User.username.ilike(f"%{q}%")
-    ).limit(5).all()
-    
-    return {
-        "status": "success", 
-        "users": [{"username": u.username, "avatar_url": getattr(u, 'avatar_url', None)} for u in users]
-    }
 
 @app.post("/api/documents/transfer")
 def transfer_document_ownership(
