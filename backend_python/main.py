@@ -15,15 +15,15 @@ from sqlalchemy import func
 import fitz
 import chromadb
 
-# --- ÚJ: OpenAI Import ---
 from openai import OpenAI
 
 import models
 from database import engine, get_db
 
+from routers import auth
+
 load_dotenv()
 
-# --- ÚJ: OpenAI Beállítások ---
 openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 MODEL_NAME = "gpt-4o-mini"
 EMBEDDING_MODEL = "text-embedding-3-small"
@@ -42,7 +42,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- UTILS ---
+app.include_router(auth.router)
+
 
 def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 200) -> List[str]:
     chunks = []
@@ -53,44 +54,6 @@ def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 200) -> List[st
         start += (chunk_size - overlap)
     return chunks
 
-# --- AUTH ENDPOINTS ---
-
-@app.post("/api/register")
-def register_user(user_data: schemas.UserRegister, db: Session = Depends(get_db)):
-    existing_user = db.query(models.User).filter(models.User.email == user_data.email).first()
-    if existing_user:
-        raise HTTPException(status_code=400, detail="Email already registered.")
-    
-    hashed_password = security.hash_password(user_data.password)
-    new_user = models.User(
-        id=str(uuid.uuid4()),
-        email=user_data.email,
-        username=user_data.username,
-        password_hash=hashed_password
-    )
-    db.add(new_user)
-    db.commit()
-    
-    return {"status": "success", "message": "Registration successful!"}
-
-@app.post("/api/login")
-def login_user(user_data: schemas.UserLogin, db: Session = Depends(get_db)):
-    user = db.query(models.User).filter(models.User.email == user_data.email).first()
-
-    if not user or not getattr(user, 'password_hash', None) or not security.verify_password(user_data.password, user.password_hash):
-        raise HTTPException(status_code=401, detail="Incorrect email or password.")
-    
-    token_data = {"sub": user.id, "email": user.email}
-    token = security.create_access_token(token_data)
-    
-    return {
-        "status": "success",
-        "access_token": token,
-        "user_id": user.id,
-        "username": user.username
-    }
-
-# --- PROFILE ENDPOINTS ---
 
 @app.get("/api/profile/me")
 def get_profile(user_id: str = Depends(security.get_current_user_id), db: Session = Depends(get_db)):
@@ -125,8 +88,6 @@ def update_profile(
     db.commit()
     return {"status": "success", "message": "Profile updated."}
 
-# --- CORE ENDPOINTS ---
-
 @app.post("/api/upload")
 async def upload_document(
     file: UploadFile = File(...),
@@ -137,14 +98,12 @@ async def upload_document(
     try:
         content = await file.read()
         
-        # 1. Szöveg kinyerése a PDF-ből (Helyi feldolgozás, nem küldjük el az OpenAI-nak a teljes fájlt!)
         doc_pdf = fitz.open(stream=content, filetype="pdf")
         full_text = "".join(page.get_text() for page in doc_pdf)
         
         if not full_text.strip():
              raise HTTPException(status_code=400, detail="The PDF is empty or text could not be extracted.")
 
-        # --- ÚJ: OpenAI Kulcsszó Generálás ---
         system_prompt = """
         Analyze the following document text.
         Extract the 3 to 5 most important core concepts in English.
@@ -153,7 +112,6 @@ async def upload_document(
         Return ONLY a single, comma-separated list of these words in lowercase. No extra text.
         """
         
-        # Mivel a teljes szöveg hosszú lehet, csak az első 10000 karaktert küldjük a kulcsszó-elemzéshez
         text_for_analysis = full_text[:10000]
         
         completion = openai_client.chat.completions.create(
@@ -168,7 +126,6 @@ async def upload_document(
         raw_keywords = [k.strip().lower() for k in completion.choices[0].message.content.split(',') if k.strip()]
         keyword_list = list(set(raw_keywords))
 
-        # 3. Adatbázis mentés
         doc_id = str(uuid.uuid4())
         doc_visibility = "Aggregate" if permission_type.value == "Aggregate" else "Private"
         db.add(models.Document(id=doc_id, file_path=file.filename, visibility=doc_visibility))
@@ -184,11 +141,9 @@ async def upload_document(
                 db.flush()
             db.add(models.DocumentKeyword(document_id=doc_id, keyword_id=db_kw.id))
 
-        # 4. Chunking és Vektorizálás
         chunks = chunk_text(full_text)
 
         for i, chunk in enumerate(chunks):
-            # --- ÚJ: OpenAI Embedding hívás ---
             response = openai_client.embeddings.create(
                 input=chunk,
                 model=EMBEDDING_MODEL
@@ -266,34 +221,29 @@ async def ask_infobank(
         if not candidate_doc_ids:
             return {"status": "controlled_failure", "message": "There is no document related to the question in the InfoBank."}
 
-        # 1. Keresd meg a felhasználó SAJÁT (Owner, Reader) dokumentumait
         user_permissions = db.query(models.UserDocumentPermission).filter(
             models.UserDocumentPermission.user_id == user_id,
             models.UserDocumentPermission.document_id.in_(candidate_doc_ids)
         ).all()
         direct_access_docs = [p.document_id for p in user_permissions]
 
-        # 2. Keresd meg az ÖSSZES "Aggregate" láthatóságú dokumentumot a jelöltek közül
         aggregate_docs_records = db.query(models.Document.id).filter(
             models.Document.id.in_(candidate_doc_ids),
             models.Document.visibility == "Aggregate"
         ).all()
         aggregate_docs = [r[0] for r in aggregate_docs_records]
 
-        # 3. Egyesítsd a saját és a közös dokumentumokat (duplikációk kiszűrésével)
         all_allowed_docs = list(set(direct_access_docs + aggregate_docs))
 
         if not all_allowed_docs:
             return {"status": "controlled_failure", "message": "There is no document related to the question in the InfoBank."}
 
-        # --- 1:1 OPENAI CSERE (Beágyazás/Vektorok) ---
         response = openai_client.embeddings.create(
             input=question,
             model=EMBEDDING_MODEL
         )
         question_vector = response.data[0].embedding
 
-        # Keresés a ChromaDB-ben csak az engedélyezett doksikon
         where_clause = {"document_id": all_allowed_docs[0]} if len(all_allowed_docs) == 1 else {"document_id": {"$in": all_allowed_docs}}
         results = collection.query(
             query_embeddings=[question_vector],
@@ -314,7 +264,6 @@ async def ask_infobank(
             "No hallucinations are allowed."
         )
 
-        # --- 1:1 OPENAI CSERE (Válaszadás) ---
         final_response = openai_client.chat.completions.create(
             model=MODEL_NAME,
             messages=[
