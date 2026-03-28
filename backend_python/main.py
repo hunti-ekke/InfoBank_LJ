@@ -17,18 +17,19 @@ from passlib.context import CryptContext
 
 import fitz
 import chromadb
-from google import genai
-from google.genai import types
+
+# --- ÚJ: OpenAI Import ---
+from openai import OpenAI
 
 import models
 from database import engine, get_db
 
 load_dotenv()
 
-# GOOGLE AI 
-client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
-MODEL_NAME = "gemini-3.1-flash-lite-preview"
-EMBEDDING_MODEL = "gemini-embedding-001"
+# --- ÚJ: OpenAI Beállítások ---
+openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+MODEL_NAME = "gpt-4o-mini"
+EMBEDDING_MODEL = "text-embedding-3-small"
 
 chroma_client = chromadb.PersistentClient(path="./chroma_data")
 collection = chroma_client.get_or_create_collection(name="infobank_vectors")
@@ -166,48 +167,44 @@ async def upload_document(
     permission_type: models.PermissionType = Form(...),
     db: Session = Depends(get_db)
 ):
-    temp_path = f"temp_{uuid.uuid4()}.pdf"
     try:
         content = await file.read()
-        with open(temp_path, "wb") as f:
-            f.write(content)
+        
+        # 1. Szöveg kinyerése a PDF-ből (Helyi feldolgozás, nem küldjük el az OpenAI-nak a teljes fájlt!)
+        doc_pdf = fitz.open(stream=content, filetype="pdf")
+        full_text = "".join(page.get_text() for page in doc_pdf)
+        
+        if not full_text.strip():
+             raise HTTPException(status_code=400, detail="The PDF is empty or text could not be extracted.")
 
-        # Gemini API uploading
-        gemini_file = client.files.upload(
-            file=temp_path,
-            config={'display_name': file.filename}
-        )
-
-        while True:
-            file_info = client.files.get(name=gemini_file.name)
-            if file_info.state.name == 'ACTIVE':
-                break
-            elif file_info.state.name == 'FAILED':
-                raise HTTPException(status_code=500, detail="Gemini file processing failed.")
-            time.sleep(2)
-
-        prompt = """
+        # --- ÚJ: OpenAI Kulcsszó Generálás ---
+        system_prompt = """
         Analyze the following document text.
         Extract the 3 to 5 most important core concepts in English.
         
         CRITICAL RULE: You must output ONLY single words (unigrams)! DO NOT output multi-word phrases (e.g., output "health", not "health benefits").
         Return ONLY a single, comma-separated list of these words in lowercase. No extra text.
         """
-        response = client.models.generate_content(
+        
+        # Mivel a teljes szöveg hosszú lehet, csak az első 10000 karaktert küldjük a kulcsszó-elemzéshez
+        text_for_analysis = full_text[:10000]
+        
+        completion = openai_client.chat.completions.create(
             model=MODEL_NAME,
-            contents=[gemini_file, prompt]
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": text_for_analysis}
+            ],
+            temperature=0.3
         )
         
-        raw_keywords = [k.strip().lower() for k in response.text.split(',') if k.strip()]
+        raw_keywords = [k.strip().lower() for k in completion.choices[0].message.content.split(',') if k.strip()]
         keyword_list = list(set(raw_keywords))
 
+        # 3. Adatbázis mentés
         doc_id = str(uuid.uuid4())
-        
-        # LÁTHATÓSÁG ÉS JOGOSULTSÁG SZÉTVÁLASZTÁSA
         doc_visibility = "Aggregate" if permission_type.value == "Aggregate" else "Private"
         db.add(models.Document(id=doc_id, file_path=file.filename, visibility=doc_visibility))
-        
-        # A feltöltő MINDIG Owner marad a jogosultsági táblában!
         db.add(models.UserDocumentPermission(
             id=str(uuid.uuid4()), user_id=user_id, document_id=doc_id, permission_type=models.PermissionType.Owner
         ))
@@ -220,20 +217,21 @@ async def upload_document(
                 db.flush()
             db.add(models.DocumentKeyword(document_id=doc_id, keyword_id=db_kw.id))
 
-        doc_pdf = fitz.open(stream=content, filetype="pdf")
-        full_text = "".join(page.get_text() for page in doc_pdf)
+        # 4. Chunking és Vektorizálás
         chunks = chunk_text(full_text)
 
         for i, chunk in enumerate(chunks):
-            emb_res = client.models.embed_content(
-                model=EMBEDDING_MODEL,
-                contents=chunk
+            # --- ÚJ: OpenAI Embedding hívás ---
+            response = openai_client.embeddings.create(
+                input=chunk,
+                model=EMBEDDING_MODEL
             )
+            embedding_vector = response.data[0].embedding
             
             chunk_id = str(uuid.uuid4())
             collection.add(
                 ids=[chunk_id],
-                embeddings=[emb_res.embeddings[0].values],
+                embeddings=[embedding_vector],
                 metadatas=[{"document_id": doc_id}],
                 documents=[chunk]
             )
@@ -248,9 +246,6 @@ async def upload_document(
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
 
 @app.post("/api/ask")
 async def ask_infobank(
@@ -259,23 +254,38 @@ async def ask_infobank(
     db: Session = Depends(get_db)
 ):
     try:
+        all_kws = db.query(models.Keyword.word).all()
+        db_keywords_str = ", ".join([k[0] for k in all_kws])
+
         kw_prompt = f"""
-        Analyze the following question. 
-        Use the recent conversation history to understand the context if the question relies on previous concepts.
+        Analyze the following question: "{question}"
         
-        Current Question: {question}
+        Here is the list of available document tags in our database:
+        [{db_keywords_str}]
         
-        1. Identify the 3 most important core concepts in English for the current question.
-        2. For each concept, generate 2 common English synonyms.
-        3. CRITICAL RULE: You must output ONLY single words (unigrams)! DO NOT output multi-word phrases (e.g., output "health", not "health of residents").
-        4. Return ONLY a single, comma-separated list of these ~9 single words. No extra text, no markdown.
-        5. Answer in the same language as the question was given in.
+        Your task:
+        1. Select up to 3 tags from the list above that are semantically related to the question's core concepts.
+        2. Handle synonyms and grammar (e.g., if the question asks about "fish" or "creatures", map it to the tag "ecosystem" if available).
+        3. CRITICAL RULE: You MUST strictly copy the exact words from the list. Do not invent new words.
+        4. If the question is completely unrelated to ALL of these tags, output the exact word: NONE.
+        5. Return ONLY a comma-separated list of the selected tags (or NONE). No extra text.
         """
-        kw_response = client.models.generate_content(model=MODEL_NAME, contents=kw_prompt)
-        question_keywords = [k.strip().lower() for k in kw_response.text.split(',') if k.strip()]
+        
+        kw_response = openai_client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[{"role": "user", "content": kw_prompt}],
+            temperature=0.1
+        )
+        
+        raw_result = kw_response.choices[0].message.content.strip()
+        print(f"--- DEBUG: LLM Smart Routing Result: {raw_result} ---")
+        
+        if raw_result == "NONE":
+            return {"status": "controlled_failure", "message": "There is no document related to the question in the InfoBank."}
+
+        question_keywords = [k.strip() for k in raw_result.split(',') if k.strip()]
         
         matched_keywords = db.query(models.Keyword).filter(models.Keyword.word.in_(question_keywords)).all()
-        print(f"--- DEBUG: Gemini searched for these keywords: {question_keywords} ---")
 
         if not matched_keywords:
             return {"status": "controlled_failure", "message": "There is no document related to the question in the InfoBank."}
@@ -309,8 +319,12 @@ async def ask_infobank(
         if not all_allowed_docs:
             return {"status": "controlled_failure", "message": "There is no document related to the question in the InfoBank."}
 
-        emb_res = client.models.embed_content(model=EMBEDDING_MODEL, contents=question)
-        question_vector = emb_res.embeddings[0].values
+        # --- 1:1 OPENAI CSERE (Beágyazás/Vektorok) ---
+        response = openai_client.embeddings.create(
+            input=question,
+            model=EMBEDDING_MODEL
+        )
+        question_vector = response.data[0].embedding
 
         # Keresés a ChromaDB-ben csak az engedélyezett doksikon
         where_clause = {"document_id": all_allowed_docs[0]} if len(all_allowed_docs) == 1 else {"document_id": {"$in": all_allowed_docs}}
@@ -333,14 +347,14 @@ async def ask_infobank(
             "No hallucinations are allowed."
         )
 
-        prompt = f"Question: {question}\n\nContext from the document(s):\n{context_text}"
-        response = client.models.generate_content(
+        # --- 1:1 OPENAI CSERE (Válaszadás) ---
+        final_response = openai_client.chat.completions.create(
             model=MODEL_NAME,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                system_instruction=system_instruction,
-                temperature=0.1
-            )
+            messages=[
+                {"role": "system", "content": system_instruction},
+                {"role": "user", "content": f"Question: {question}\n\nContext from the document(s):\n{context_text}"}
+            ],
+            temperature=0.1
         )
 
         sources_list = []
@@ -360,7 +374,7 @@ async def ask_infobank(
             "question": question,
             "extracted_keywords": question_keywords,
             "searched_documents_count": len(all_allowed_docs),
-            "answer": response.text,
+            "answer": final_response.choices[0].message.content,
             "sources": sources_list
         }
 
@@ -471,7 +485,7 @@ def get_user_documents(user_id: str, db: Session = Depends(get_db)):
                 "document_id": doc.id,
                 "file_name": doc.file_path,
                 "permission": display_perm,
-                "is_owner": p.permission_type.value == "Owner", # <--- EZT A SORT ADD HOZZÁ!
+                "is_owner": p.permission_type.value == "Owner",
                 "keywords": keywords,
                 "upload_date": doc.upload_date.strftime("%Y-%m-%d %H:%M") if doc.upload_date else "N/A"
             })
@@ -511,7 +525,6 @@ def update_permission(
     if not perm_record or perm_record.permission_type != models.PermissionType.Owner:
         raise HTTPException(status_code=403, detail="Only the Owner can change permissions.")
 
-    # Ne a user "Owner" jogát írjuk felül, hanem a dokumentum láthatóságát!
     doc = db.query(models.Document).filter(models.Document.id == doc_id).first()
     if doc:
         doc.visibility = "Aggregate" if new_perm == "Aggregate" else "Private"
