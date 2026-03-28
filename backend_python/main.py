@@ -2,18 +2,15 @@ import os
 import uuid
 import time
 import datetime
+import schemas
+import security
+
 from typing import List
 from fastapi import FastAPI, Depends, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 from dotenv import load_dotenv
-from pydantic import BaseModel
 from sqlalchemy import func
-
-# Auth
-import jwt
-from passlib.context import CryptContext
 
 import fitz
 import chromadb
@@ -45,29 +42,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-SECRET_KEY = "info-bank-szuper-titkos-kulcs-2026"
-ALGORITHM = "HS256"
-
-# Token kinyeréséhez a fejlécből
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/login")
-
-# --- SCHEMAS ---
-
-class UserRegister(BaseModel):
-    email: str
-    username: str
-    password: str
-
-class UserLogin(BaseModel):
-    email: str
-    password: str
-
-class ProfileUpdate(BaseModel):
-    full_name: str | None = None
-    email: str | None = None
-    avatar_url: str | None = None
-
 # --- UTILS ---
 
 def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 200) -> List[str]:
@@ -79,22 +53,15 @@ def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 200) -> List[st
         start += (chunk_size - overlap)
     return chunks
 
-def get_current_user_id(token: str = Depends(oauth2_scheme)):
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        return payload.get("sub")
-    except jwt.PyJWTError:
-        raise HTTPException(status_code=401, detail="Token invalid or expired.")
-
 # --- AUTH ENDPOINTS ---
 
 @app.post("/api/register")
-def register_user(user_data: UserRegister, db: Session = Depends(get_db)):
+def register_user(user_data: schemas.UserRegister, db: Session = Depends(get_db)):
     existing_user = db.query(models.User).filter(models.User.email == user_data.email).first()
     if existing_user:
         raise HTTPException(status_code=400, detail="Email already registered.")
     
-    hashed_password = pwd_context.hash(user_data.password)
+    hashed_password = security.hash_password(user_data.password)
     new_user = models.User(
         id=str(uuid.uuid4()),
         email=user_data.email,
@@ -107,14 +74,14 @@ def register_user(user_data: UserRegister, db: Session = Depends(get_db)):
     return {"status": "success", "message": "Registration successful!"}
 
 @app.post("/api/login")
-def login_user(user_data: UserLogin, db: Session = Depends(get_db)):
+def login_user(user_data: schemas.UserLogin, db: Session = Depends(get_db)):
     user = db.query(models.User).filter(models.User.email == user_data.email).first()
 
-    if not user or not getattr(user, 'password_hash', None) or not pwd_context.verify(user_data.password, user.password_hash):
+    if not user or not getattr(user, 'password_hash', None) or not security.verify_password(user_data.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Incorrect email or password.")
     
     token_data = {"sub": user.id, "email": user.email}
-    token = jwt.encode(token_data, SECRET_KEY, algorithm=ALGORITHM)
+    token = security.create_access_token(token_data)
     
     return {
         "status": "success",
@@ -126,7 +93,7 @@ def login_user(user_data: UserLogin, db: Session = Depends(get_db)):
 # --- PROFILE ENDPOINTS ---
 
 @app.get("/api/profile/me")
-def get_profile(user_id: str = Depends(get_current_user_id), db: Session = Depends(get_db)):
+def get_profile(user_id: str = Depends(security.get_current_user_id), db: Session = Depends(get_db)):
     user = db.query(models.User).filter(models.User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found.")
@@ -140,8 +107,8 @@ def get_profile(user_id: str = Depends(get_current_user_id), db: Session = Depen
 
 @app.put("/api/profile/update")
 def update_profile(
-    profile_data: ProfileUpdate, 
-    user_id: str = Depends(get_current_user_id), 
+    profile_data: schemas.ProfileUpdate, 
+    user_id: str = Depends(security.get_current_user_id), 
     db: Session = Depends(get_db)
 ):
     user = db.query(models.User).filter(models.User.id == user_id).first()
