@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>InfoBank Admin Logs</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 p-8">
+    <div class="max-w-6xl mx-auto bg-white p-6 rounded-lg shadow-md">
+        <h1 class="text-2xl font-bold mb-4">Rendszer Logok (Audit)</h1>
+        
+        <div class="mb-4 flex gap-4">
+            <input type="text" id="actionFilter" placeholder="Szűrés akcióra (pl. CHAT_ASK)" class="border p-2 rounded w-64">
+            <button onclick="fetchLogs()" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700">Szűrés</button>
+        </div>
+
+        <div class="overflow-x-auto">
+            <table class="min-w-full border-collapse">
+                <thead>
+                    <tr class="bg-gray-200 text-left">
+                        <th class="p-3 border">Időpont</th>
+                        <th class="p-3 border">User ID</th>
+                        <th class="p-3 border">Esemény</th>
+                        <th class="p-3 border">Státusz</th>
+                        <th class="p-3 border">Részletek (Kérdés / Válasz)</th>
+                    </tr>
+                </thead>
+                <tbody id="logsTableBody">
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        async function fetchLogs() {
+            const action = document.getElementById('actionFilter').value;
+            let url = 'http://127.0.0.1:8000/api/admin/logs';
+            if (action) {
+                url += `?action=${action}`;
+            }
+
+            try {
+                const response = await fetch(url);
+                const data = await response.json();
+                const tbody = document.getElementById('logsTableBody');
+                tbody.innerHTML = '';
+
+                data.logs.forEach(log => {
+                    const details = log.details ? JSON.parse(log.details) : {};
+                    const statusColor = details.status === 'success' ? 'text-green-600' : 'text-red-600';
+                    const date = new Date(log.timestamp).toLocaleString('hu-HU');
+
+                    const tr = document.createElement('tr');
+                    tr.className = "border-b hover:bg-gray-50";
+                    tr.innerHTML = `
+                        <td class="p-3 border whitespace-nowrap">${date}</td>
+                        <td class="p-3 border text-sm text-gray-500">${log.user_id || 'N/A'}</td>
+                        <td class="p-3 border font-semibold">${log.action}</td>
+                        <td class="p-3 border font-bold ${statusColor}">${details.status || '-'}</td>
+                        <td class="p-3 border text-sm max-w-md truncate cursor-pointer" onclick="alert('Kérdés:\\n${details.question}\\n\\nVálasz:\\n${details.answer}')">
+                            ${details.question ? '<b>Q:</b> ' + details.question : ''}
+                        </td>
+                    `;
+                    tbody.appendChild(tr);
+                });
+            } catch (error) {
+                console.error("Hiba a logok lekérésekor:", error);
+            }
+        }
+
+        window.onload = fetchLogs;
+    </script>
+</body>
+</html>

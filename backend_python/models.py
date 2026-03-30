@@ -1,7 +1,8 @@
-from sqlalchemy import Column, String, Integer, Text, Enum, ForeignKey, TIMESTAMP, func
+from sqlalchemy import Column, String, Integer, Text, Enum, ForeignKey, TIMESTAMP, DateTime, func
 from sqlalchemy.orm import relationship
 from database import Base
 import enum
+import datetime
 
 class PermissionType(str, enum.Enum):
     Owner = 'Owner'
@@ -57,3 +58,12 @@ class UserDocumentPermission(Base):
     created_at = Column(TIMESTAMP, server_default=func.now())
     
     document = relationship("Document", back_populates="permissions")
+
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+    id = Column(String(50), primary_key=True, index=True)
+    user_id = Column(String(50), index=True)
+    action = Column(String(50), index=True)
+    target_id = Column(String(50), nullable=True)
+    details = Column(Text, nullable=True)
+    timestamp = Column(DateTime, default=datetime.datetime.utcnow)
