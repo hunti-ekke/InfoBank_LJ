@@ -48,7 +48,11 @@
 
                 data.logs.forEach(log => {
                     const details = log.details ? JSON.parse(log.details) : {};
-                    const statusColor = details.status === 'success' ? 'text-green-600' : 'text-red-600';
+                    let statusColor = 'text-gray-400';
+                    if (details.status === 'success') statusColor = 'text-green-600'; 
+                    else if (details.status === 'not_found') statusColor = 'text-orange-500'; 
+                    else if (details.status === 'rejected') statusColor = 'text-red-600'; 
+                    else if (details.status === 'error') statusColor = 'text-red-900';
                     const date = new Date(log.timestamp).toLocaleString('hu-HU');
 
                     const tr = document.createElement('tr');

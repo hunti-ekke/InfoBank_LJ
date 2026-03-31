@@ -59,7 +59,7 @@ async def ask_infobank(
         
         if raw_result == "NONE":
             msg = "There is no document related to the question in the InfoBank."
-            background_tasks.add_task(log_chat_event, db, user_id, question, msg, [], [], "controlled_failure")
+            background_tasks.add_task(log_chat_event, db, user_id, question, msg, [], [], "rejected")
             return {"status": "controlled_failure", "message": msg}
 
         question_keywords = [k.strip() for k in raw_result.split(',') if k.strip()]
@@ -67,7 +67,7 @@ async def ask_infobank(
 
         if not matched_keywords:
             msg = "There is no document related to the question in the InfoBank."
-            background_tasks.add_task(log_chat_event, db, user_id, question, msg, question_keywords, [], "controlled_failure")
+            background_tasks.add_task(log_chat_event, db, user_id, question, msg, question_keywords, [], "rejected")
             return {"status": "controlled_failure", "message": msg}
 
         kw_ids = [kw.id for kw in matched_keywords]
@@ -76,7 +76,7 @@ async def ask_infobank(
 
         if not candidate_doc_ids:
             msg = "There is no document related to the question in the InfoBank."
-            background_tasks.add_task(log_chat_event, db, user_id, question, msg, question_keywords, [], "controlled_failure")
+            background_tasks.add_task(log_chat_event, db, user_id, question, msg, question_keywords, [], "rejected")
             return {"status": "controlled_failure", "message": msg}
 
         user_permissions = db.query(models.UserDocumentPermission).filter(models.UserDocumentPermission.user_id == user_id, models.UserDocumentPermission.document_id.in_(candidate_doc_ids)).all()
@@ -89,7 +89,7 @@ async def ask_infobank(
 
         if not all_allowed_docs:
             msg = "There is no document related to the question in the InfoBank."
-            background_tasks.add_task(log_chat_event, db, user_id, question, msg, question_keywords, [], "controlled_failure")
+            background_tasks.add_task(log_chat_event, db, user_id, question, msg, question_keywords, [], "rejected")
             return {"status": "controlled_failure", "message": msg}
 
         response = ai_service.openai_client.embeddings.create(input=question, model=ai_service.EMBEDDING_MODEL)
@@ -100,7 +100,7 @@ async def ask_infobank(
 
         if not results['documents'] or not results['documents'][0]:
             msg = "The answer cannot be found in the document."
-            background_tasks.add_task(log_chat_event, db, user_id, question, msg, question_keywords, [], "success")
+            background_tasks.add_task(log_chat_event, db, user_id, question, msg, question_keywords, [], "not_found")
             return {"status": "success", "answer": msg}
 
         context_text = "\n\n---\n\n".join(results['documents'][0])
@@ -131,8 +131,13 @@ async def ask_infobank(
                 sources_list.append({"file_name": file_name, "text": chunk_text})
 
         answer = final_response.choices[0].message.content
+        
+        if "The answer cannot be found in the document." in answer:
+            final_status = "not_found"
+        else:
+            final_status = "success"
 
-        background_tasks.add_task(log_chat_event, db, user_id, question, answer, question_keywords, sources_list, "success")
+        background_tasks.add_task(log_chat_event, db, user_id, question, answer, question_keywords, sources_list, final_status)
 
         return {
             "status": "success",
