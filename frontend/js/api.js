@@ -29,13 +29,56 @@ function renderRoleSummary(summary) {
     return Object.entries(summary).map(([role, count]) => `${roleBadge(role)}<span class="text-[10px] text-gray-400 ml-1 mr-2">x${count}</span>`).join('');
 }
 
+function levelLabel(level) {
+    return String(level).replaceAll('_', '/');
+}
+
+function renderLevelSummary(summary) {
+    if (!summary || Object.keys(summary).length === 0) return '<span class="text-gray-400">N/A</span>';
+    return Object.entries(summary).map(([level, score]) => {
+        const pct = Math.round(Number(score || 0) * 100);
+        return `
+            <div class="flex items-center gap-2">
+                <span class="w-28 capitalize">${escapeHtml(levelLabel(level))}</span>
+                <div class="flex-1 h-1.5 rounded-full bg-slate-200 overflow-hidden">
+                    <div class="h-full bg-slate-500" style="width:${pct}%"></div>
+                </div>
+                <span class="w-8 text-right text-slate-500">${pct}</span>
+            </div>`;
+    }).join('');
+}
+
+function renderSourceProfile(profile) {
+    if (!profile) return '';
+    const genres = (profile.genre || []).join(', ') || 'N/A';
+    const speechActs = (profile.speech_acts || []).join(', ') || 'N/A';
+    const temporal = (profile.temporal_status || []).join(', ') || 'N/A';
+    const warnings = (profile.evidence_warnings || []).join(', ') || 'none';
+    const levels = renderLevelSummary(profile.levels || {});
+    return `
+        <details class="mt-2 bg-white/70 border border-slate-200 rounded-lg p-2">
+            <summary class="cursor-pointer text-[10px] font-bold text-slate-500 uppercase tracking-wide">Full usable relevance profile</summary>
+            <div class="mt-2 grid gap-1 text-[10px] text-slate-600">
+                <div><b>Genre:</b> ${escapeHtml(genres)}</div>
+                <div><b>Speech act / perlocutionary:</b> ${escapeHtml(speechActs)}</div>
+                <div><b>Temporal/status:</b> ${escapeHtml(temporal)}</div>
+                <div><b>Evidence warnings:</b> ${escapeHtml(warnings)}</div>
+                <div class="mt-2 space-y-1">${levels}</div>
+            </div>
+        </details>`;
+}
+
 function renderGovernanceTrace(res) {
     const profile = res.query_profile || {};
     const gov = res.governance || {};
     const roleSummary = renderRoleSummary(res.source_role_summary);
     const lexicalTerms = (profile.lexical_terms || []).join(', ') || 'N/A';
+    const semanticTags = (profile.semantic_tags || []).join(', ') || 'N/A';
+    const expectedGenres = (profile.expected_genres || []).join(', ') || 'N/A';
     const taskIntent = profile.task_intent || 'general_document_question';
+    const retrievalStrategy = profile.retrieval_strategy || 'N/A';
     const deniedCount = (gov.denied_doc_ids || []).length;
+    const levelSummary = renderLevelSummary(res.relevance_level_summary);
     return `
         <div class="mt-4 bg-slate-50 border border-slate-200 rounded-xl p-3 text-[11px] text-slate-600">
             <div class="font-bold text-slate-700 mb-2 flex items-center gap-2">
@@ -44,9 +87,16 @@ function renderGovernanceTrace(res) {
             </div>
             <div class="grid gap-1">
                 <div><b>Task intent:</b> ${escapeHtml(taskIntent)}</div>
+                <div><b>Retrieval strategy:</b> ${escapeHtml(retrievalStrategy)}</div>
                 <div><b>Lexical signals:</b> ${escapeHtml(lexicalTerms)}</div>
+                <div><b>Semantic tags:</b> ${escapeHtml(semanticTags)}</div>
+                <div><b>Expected genres:</b> ${escapeHtml(expectedGenres)}</div>
                 <div><b>Source roles:</b> ${roleSummary || '<span class="text-gray-400">N/A</span>'}</div>
                 <div><b>Denied by governance:</b> ${deniedCount}</div>
+                <details class="mt-2">
+                    <summary class="cursor-pointer font-bold text-slate-500">Nine-level relevance summary</summary>
+                    <div class="mt-2 space-y-1">${levelSummary}</div>
+                </details>
             </div>
         </div>`;
 }
@@ -139,6 +189,7 @@ async function askQuestion() {
                             <div class="italic leading-relaxed max-h-24 overflow-y-auto pr-1 text-[11px] whitespace-pre-wrap">
                                 ${escapeHtml(src.text)}
                             </div>
+                            ${renderSourceProfile(src.usable_relevance)}
                         </div>
                     `).join('');
 
