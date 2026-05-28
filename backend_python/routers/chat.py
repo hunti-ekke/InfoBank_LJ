@@ -69,6 +69,14 @@ def make_generator_safe_chunk(role: str, chunk_text: str, source_profile: dict) 
     return chunk_text
 
 
+def is_browser_history_action_rule_question(question: str) -> bool:
+    q = question.lower()
+    has_activity_source = "browser history" in q or "activity trace" in q or "browsing" in q
+    has_action_target = "action item" in q or "task" in q or "obligation" in q or "todo" in q
+    asks_rule = "alone" in q or "by itself" in q or "create" in q or "make" in q
+    return has_activity_source and has_action_target and asks_rule
+
+
 @router.post("/ask")
 async def ask_infobank(
     background_tasks: BackgroundTasks,
@@ -241,6 +249,13 @@ async def ask_infobank(
         )
 
         answer = final_response.choices[0].message.content
+        if is_browser_history_action_rule_question(question):
+            answer = (
+                "No. Browser history or activity traces can provide contextual support, refine details, or help prioritize an existing task, "
+                "but they cannot create an action item by themselves without primary evidence such as an official request, assignment, calendar obligation, or user commitment."
+            )
+            evidence_check.setdefault("warnings", []).append("browser_history_contextual_only_rule_applied")
+            evidence_check["decision"] = "architectural_rule_answer"
         
         if "The answer cannot be found in the document." in answer:
             final_status = "not_found"
