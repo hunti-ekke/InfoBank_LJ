@@ -4,6 +4,28 @@ function connectorOutput(data) {
     el.textContent = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
 }
 
+function addConnectorCleanupButtons() {
+    const gmailSyncBtn = document.querySelector('button[onclick="syncGmail()"]');
+    if (gmailSyncBtn && !document.getElementById('btn-clear-email-evidence')) {
+        const btn = document.createElement('button');
+        btn.id = 'btn-clear-email-evidence';
+        btn.onclick = clearEmailEvidence;
+        btn.className = 'bg-red-50 border border-red-200 text-red-700 px-4 py-2 rounded-lg text-sm font-bold hover:bg-red-100';
+        btn.innerHTML = '<i class="fas fa-trash-alt mr-1"></i>Clear synced emails';
+        gmailSyncBtn.parentElement.appendChild(btn);
+    }
+
+    const historyUploadBtn = document.querySelector('button[onclick="uploadBrowserHistory()"]');
+    if (historyUploadBtn && !document.getElementById('btn-clear-browser-evidence')) {
+        const btn = document.createElement('button');
+        btn.id = 'btn-clear-browser-evidence';
+        btn.onclick = clearBrowserHistoryEvidence;
+        btn.className = 'bg-red-50 border border-red-200 text-red-700 px-4 py-2 rounded-lg text-sm font-bold hover:bg-red-100';
+        btn.innerHTML = '<i class="fas fa-trash-alt mr-1"></i>Clear search/history';
+        historyUploadBtn.parentElement.appendChild(btn);
+    }
+}
+
 async function loadConnectorStatus() {
     try {
         const r = await fetch(`${API}/connectors/gmail/status`, { headers: authHeaders() });
@@ -43,6 +65,34 @@ async function syncGmail() {
         connectorOutput(data);
     } catch (e) {
         connectorOutput(`Gmail sync failed: ${e.message}\n\nUse 'Import demo email' if you only want to test the CITDS email EvidenceUnit pipeline without Google OAuth.`);
+    }
+}
+
+async function clearEmailEvidence() {
+    if (!confirm('Biztos törlöd az eddig InfoBankba syncelt/importált email evidence adatokat? A Gmail OAuth kapcsolat megmarad, csak az importált EvidenceUnit sorok törlődnek.')) return;
+    try {
+        const r = await fetch(`${API}/evidence/clear/email`, {
+            method: 'DELETE',
+            headers: authHeaders(),
+        });
+        const data = await readApiResponse(r);
+        connectorOutput({ message: 'Synced/imported email evidence cleared.', ...data });
+    } catch (e) {
+        connectorOutput(`Clear email evidence failed: ${e.message}`);
+    }
+}
+
+async function clearBrowserHistoryEvidence() {
+    if (!confirm('Biztos törlöd az eddig InfoBankba importált Google search / browser history evidence adatokat?')) return;
+    try {
+        const r = await fetch(`${API}/evidence/clear/browser-history`, {
+            method: 'DELETE',
+            headers: authHeaders(),
+        });
+        const data = await readApiResponse(r);
+        connectorOutput({ message: 'Browser/search-history evidence cleared.', ...data });
+    } catch (e) {
+        connectorOutput(`Clear browser/search-history evidence failed: ${e.message}`);
     }
 }
 
@@ -123,3 +173,5 @@ async function importDemoGoogleSearch() {
         connectorOutput(`Demo Google search import failed: ${e.message}`);
     }
 }
+
+window.addEventListener('DOMContentLoaded', addConnectorCleanupButtons);
