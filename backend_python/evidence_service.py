@@ -14,6 +14,7 @@ from typing import Any, Dict, Iterable, List, Optional
 
 from sqlalchemy.orm import Session
 
+import citds_classifier
 import models
 import relevance
 
@@ -58,37 +59,58 @@ def import_evidence_units(db: Session, user_id: str, units: Iterable[Dict[str, A
     return created
 
 
+def _source_type_default_use_decision(source_type: str) -> str:
+    """Evidence units are owned user data by default.
+
+    BrowserHistory and ActivityTrace are full-access data, but their evidential
+    source role remains contextual through the classifier. This distinction is
+    important: governance can allow access while evidential logic still prevents
+    a task from being created from activity traces alone.
+    """
+
+    if source_type in {"BrowserHistory", "ActivityTrace"}:
+        return relevance.USE_FULL
+    return relevance.USE_FULL
+
+
+def _citds_role_to_action_role(source_role: str, source_type: str) -> str:
+    if source_role == relevance.SOURCE_ROLE_GOVERNANCE_EXCLUDED:
+        return ACTION_ROLE_EXCLUDED
+    if source_role == relevance.SOURCE_ROLE_CONTRASTIVE:
+        return ACTION_ROLE_CONTRASTIVE
+    if source_type in {"BrowserHistory", "ActivityTrace"}:
+        return ACTION_ROLE_CONTEXTUAL
+    if source_role == relevance.SOURCE_ROLE_PRIMARY:
+        return ACTION_ROLE_PRIMARY
+    if source_role == relevance.SOURCE_ROLE_AGGREGATE_ONLY:
+        return ACTION_ROLE_CONTEXTUAL
+    return ACTION_ROLE_CONTEXTUAL
+
+
 def classify_evidence_unit(unit: models.EvidenceUnit) -> Dict[str, Any]:
     text = f"{unit.title}\n{unit.content}"
-    lowered = text.lower()
     source_type = unit.source_type.value if hasattr(unit.source_type, "value") else str(unit.source_type)
+    use_decision = _source_type_default_use_decision(source_type)
+    classifier_result = citds_classifier.classify_source(
+        text=text,
+        task_intent="current_action_list",
+        use_decision=use_decision,
+        use_llm=False,
+    )
 
-    role = ACTION_ROLE_CONTEXTUAL
+    action_role = _citds_role_to_action_role(classifier_result.get("source_role"), source_type)
+    lowered = text.lower()
     status = "unknown"
+    if action_role == ACTION_ROLE_CONTRASTIVE:
+        status = "closed"
+    elif action_role == ACTION_ROLE_CONTEXTUAL:
+        status = "contextual"
+    elif action_role == ACTION_ROLE_PRIMARY:
+        status = "open"
+
     due = extract_due_date(text)
     action = extract_action_text(text)
     object_label = extract_object_label(text)
-
-    primary_markers = [
-        "official request", "accepted assignment", "obligation", "must", "required",
-        "please", "could you", "can you", "unanswered", "calendar item", "invitation",
-        "deadline", "due", "exam announcement", "review request",
-    ]
-    contextual_markers = ["browser", "history", "search", "visited", "template", "map", "transport", "hotel"]
-    closure_markers = ["completed", "closed", "cancelled", "canceled", "answered", "sent reply", "done", "not needed"]
-
-    if any(marker in lowered for marker in closure_markers):
-        role = ACTION_ROLE_CONTRASTIVE
-        status = "closed"
-    elif source_type in {"BrowserHistory", "ActivityTrace"} or any(marker in lowered for marker in contextual_markers):
-        role = ACTION_ROLE_CONTEXTUAL
-        status = "contextual"
-    elif any(marker in lowered for marker in primary_markers):
-        role = ACTION_ROLE_PRIMARY
-        status = "open"
-    elif source_type in {"Email", "Calendar"}:
-        role = ACTION_ROLE_PRIMARY
-        status = "open"
 
     return {
         "id": unit.id,
@@ -98,15 +120,19 @@ def classify_evidence_unit(unit: models.EvidenceUnit) -> Dict[str, Any]:
         "timestamp": unit.source_timestamp.isoformat() if unit.source_timestamp else None,
         "thread_id": unit.thread_id,
         "relation_key": unit.relation_key or object_label or unit.thread_id or unit.id,
-        "role": role,
+        "role": action_role,
+        "citds_source_role": classifier_result.get("source_role"),
         "status": status,
         "due": due,
         "action": action,
         "object": object_label,
+        "classifier": classifier_result,
         "signals": {
-            "primary": [m for m in primary_markers if m in lowered],
-            "contextual": [m for m in contextual_markers if m in lowered],
-            "closure": [m for m in closure_markers if m in lowered],
+            "primary": classifier_result.get("speech_acts", []),
+            "contextual": ["activity_trace"] if source_type in {"BrowserHistory", "ActivityTrace"} else [],
+            "closure": [s for s in classifier_result.get("speech_acts", []) if s in {"completion", "cancellation"}],
+            "genre": classifier_result.get("genre", []),
+            "temporal_status": classifier_result.get("temporal_status", []),
         },
     }
 
@@ -167,22 +193,27 @@ def reconstruct_action_list(db: Session, user_id: str) -> Dict[str, Any]:
                 "primary_evidence": [],
                 "contextual_support": [],
                 "contrastive_evidence": [],
+                "excluded_evidence": [],
             }
         if item["role"] == ACTION_ROLE_PRIMARY:
             grouped[key]["primary_evidence"].append(item)
         elif item["role"] == ACTION_ROLE_CONTRASTIVE:
             grouped[key]["contrastive_evidence"].append(item)
+        elif item["role"] == ACTION_ROLE_EXCLUDED:
+            grouped[key]["excluded_evidence"].append(item)
         else:
             grouped[key]["contextual_support"].append(item)
 
     open_items: List[Dict[str, Any]] = []
     closed_items: List[Dict[str, Any]] = []
     contextual_only: List[Dict[str, Any]] = []
+    excluded_only: List[Dict[str, Any]] = []
 
     for group in grouped.values():
         primary = group["primary_evidence"]
         contextual = group["contextual_support"]
         contrastive = group["contrastive_evidence"]
+        excluded = group["excluded_evidence"]
         if primary and not contrastive:
             strongest = sorted(primary, key=lambda x: x.get("timestamp") or "")[-1]
             open_items.append({
@@ -192,16 +223,8 @@ def reconstruct_action_list(db: Session, user_id: str) -> Dict[str, Any]:
                 "due": strongest.get("due"),
                 "status": "open",
                 "E": [e["id"] for e in primary + contextual],
-                "R": {
-                    "primary": len(primary),
-                    "contextual": len(contextual),
-                    "contrastive": 0,
-                },
-                "evidence": {
-                    "primary": primary,
-                    "contextual": contextual,
-                    "contrastive": [],
-                },
+                "R": {"primary": len(primary), "contextual": len(contextual), "contrastive": 0, "excluded": len(excluded)},
+                "evidence": {"primary": primary, "contextual": contextual, "contrastive": [], "excluded": excluded},
             })
         elif primary and contrastive:
             strongest = sorted(primary, key=lambda x: x.get("timestamp") or "")[-1]
@@ -212,16 +235,8 @@ def reconstruct_action_list(db: Session, user_id: str) -> Dict[str, Any]:
                 "due": strongest.get("due"),
                 "status": "closed_or_cancelled",
                 "E": [e["id"] for e in primary + contextual + contrastive],
-                "R": {
-                    "primary": len(primary),
-                    "contextual": len(contextual),
-                    "contrastive": len(contrastive),
-                },
-                "evidence": {
-                    "primary": primary,
-                    "contextual": contextual,
-                    "contrastive": contrastive,
-                },
+                "R": {"primary": len(primary), "contextual": len(contextual), "contrastive": len(contrastive), "excluded": len(excluded)},
+                "evidence": {"primary": primary, "contextual": contextual, "contrastive": contrastive, "excluded": excluded},
             })
         elif contextual:
             contextual_only.append({
@@ -230,16 +245,25 @@ def reconstruct_action_list(db: Session, user_id: str) -> Dict[str, Any]:
                 "reason": "Contextual/activity evidence cannot create an obligation without primary evidence.",
                 "evidence": contextual,
             })
+        elif excluded:
+            excluded_only.append({
+                "relation_key": group["relation_key"],
+                "status": "governance_excluded",
+                "reason": "Evidence exists but is excluded by governance.",
+                "evidence": excluded,
+            })
 
     return {
         "status": "success",
         "open_items": open_items,
         "closed_items": closed_items,
         "contextual_only": contextual_only,
+        "excluded_only": excluded_only,
         "counts": {
             "open": len(open_items),
             "closed": len(closed_items),
             "contextual_only": len(contextual_only),
+            "excluded_only": len(excluded_only),
             "evidence_units": len(classified),
         },
         "classified_units": classified,
@@ -253,6 +277,7 @@ def check_rag_evidence(sources: Iterable[Dict[str, Any]], query_profile: Dict[st
     has_primary = role_summary.get(relevance.SOURCE_ROLE_PRIMARY, 0) > 0
     has_aggregate = role_summary.get(relevance.SOURCE_ROLE_AGGREGATE_ONLY, 0) > 0
     has_contrastive = role_summary.get(relevance.SOURCE_ROLE_CONTRASTIVE, 0) > 0
+    has_metadata_only = bool(governance.get("metadata_only_doc_ids"))
     has_denied = bool(governance.get("denied_doc_ids"))
 
     required = query_profile.get("required_evidence_strength")
@@ -261,6 +286,8 @@ def check_rag_evidence(sources: Iterable[Dict[str, Any]], query_profile: Dict[st
 
     if has_denied:
         warnings.append("Some candidate sources were denied before generation.")
+    if has_metadata_only:
+        warnings.append("Some candidate sources are metadata-only; content claims must not rely on them.")
     if required == "primary_required_for_direct_claim" and not has_primary:
         decision = "controlled_failure_or_cautious_answer"
         warnings.append("Primary evidence is required for this task, but no primary source was retrieved.")
@@ -282,5 +309,6 @@ def check_rag_evidence(sources: Iterable[Dict[str, Any]], query_profile: Dict[st
         "has_primary": has_primary,
         "has_aggregate": has_aggregate,
         "has_contrastive": has_contrastive,
+        "has_metadata_only": has_metadata_only,
         "warnings": warnings,
     }
