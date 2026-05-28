@@ -178,6 +178,56 @@ def list_evidence_units(user_id: str = Depends(security.get_current_user_id), db
     }
 
 
+def _clear_evidence_by_source_types(db: Session, user_id: str, source_types: List[models.EvidenceSourceType]) -> int:
+    units = db.query(models.EvidenceUnit).filter(
+        models.EvidenceUnit.user_id == user_id,
+        models.EvidenceUnit.source_type.in_(source_types),
+    ).all()
+    unit_ids = [unit.id for unit in units]
+    if not unit_ids:
+        return 0
+    db.query(models.PolicyRule).filter(
+        models.PolicyRule.owner_user_id == user_id,
+        models.PolicyRule.target_type == "EvidenceUnit",
+        models.PolicyRule.target_id.in_(unit_ids),
+    ).delete(synchronize_session=False)
+    deleted = db.query(models.EvidenceUnit).filter(models.EvidenceUnit.id.in_(unit_ids)).delete(synchronize_session=False)
+    db.commit()
+    return deleted
+
+
+@router.delete("/clear/email")
+def clear_email_evidence(user_id: str = Depends(security.get_current_user_id), db: Session = Depends(get_db)):
+    """Delete imported/synced email EvidenceUnits for the current user.
+
+    This keeps the Gmail OAuth connection itself, and only clears evidence already
+    imported into InfoBank.
+    """
+
+    try:
+        deleted = _clear_evidence_by_source_types(db, user_id, [models.EvidenceSourceType.Email])
+        return {"status": "success", "deleted": deleted, "source_type": "Email"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/clear/browser-history")
+def clear_browser_history_evidence(user_id: str = Depends(security.get_current_user_id), db: Session = Depends(get_db)):
+    """Delete imported browser/search-history EvidenceUnits for the current user."""
+
+    try:
+        deleted = _clear_evidence_by_source_types(
+            db,
+            user_id,
+            [models.EvidenceSourceType.BrowserHistory, models.EvidenceSourceType.ActivityTrace],
+        )
+        return {"status": "success", "deleted": deleted, "source_type": "BrowserHistory"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/action-list")
 def reconstruct_current_action_list(user_id: str = Depends(security.get_current_user_id), db: Session = Depends(get_db)):
     try:
