@@ -1,5 +1,6 @@
 import uuid
 import json
+import re
 from fastapi import APIRouter, Depends, Form, HTTPException, BackgroundTasks
 from sqlalchemy.orm import Session
 import models
@@ -49,20 +50,58 @@ def get_permitted_fallback_doc_ids(db: Session, user_id: str) -> list[str]:
     return list(set(direct_doc_ids + aggregate_doc_ids))
 
 
+def extract_aggregate_safe_facts(chunk_text: str, max_facts: int = 3) -> list[str]:
+    """Extract non-quotable aggregate facts from an aggregate-only chunk.
+
+    Aggregate-only documents must not be passed to the generator as raw individual
+    content. However, aggregate statistics such as averages, counts, medians, and
+    percentages are allowed to support aggregate answers. This function keeps only
+    short numeric/statistical statements and redacts obvious direct identifiers.
+    """
+
+    aggregate_markers = [
+        "average", "mean", "median", "count", "total", "statistics", "statistic",
+        "aggregate", "pilot", "approval time", "rate", "percentage", "percent",
+        "days", "hours", "items", "documents", "users",
+    ]
+    text = re.sub(r"\s+", " ", chunk_text).strip()
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    facts: list[str] = []
+
+    for sentence in sentences:
+        lowered = sentence.lower()
+        has_marker = any(marker in lowered for marker in aggregate_markers)
+        has_number = bool(re.search(r"\b\d+(?:\.\d+)?\b", sentence))
+        if not (has_marker and has_number):
+            continue
+
+        safe = re.sub(r"[\w\.-]+@[\w\.-]+", "[redacted-email]", sentence)
+        safe = re.sub(r"\b[A-Z][a-z]+\s+[A-Z][a-z]+\b", "[redacted-person]", safe)
+        facts.append(safe[:220])
+        if len(facts) >= max_facts:
+            break
+
+    return facts
+
+
 def make_generator_safe_chunk(role: str, chunk_text: str, source_profile: dict) -> str:
     """Prevent aggregate-only content from being sent verbatim to the LLM.
 
-    Aggregate sources are transformed into a small non-quotable summary signal.
-    This is the backend hardening step that complements the UI hiding behavior.
+    Aggregate sources are transformed into a small non-quotable aggregate fact
+    summary. This protects individual content while still allowing aggregate
+    answers such as averages, totals, and counts.
     """
 
     if role == relevance.SOURCE_ROLE_AGGREGATE_ONLY:
         lexical_hits = ", ".join(source_profile.get("lexical_hits", [])) or "none"
         semantic_hits = ", ".join(source_profile.get("semantic_hits", [])) or "none"
+        facts = extract_aggregate_safe_facts(chunk_text)
+        fact_text = " | ".join(facts) if facts else "No aggregate-safe numeric/statistical fact extracted from this chunk."
         return (
             "[Aggregate-only non-quotable source. Individual text is withheld. "
             f"Lexical hits: {lexical_hits}. Semantic hits: {semantic_hits}. "
-            "Use only for governed aggregate or cautious contextual statements.]"
+            f"Aggregate-safe facts: {fact_text}. "
+            "Use only for governed aggregate or cautious contextual statements; do not quote as an individual document.]"
         )
     if role == relevance.SOURCE_ROLE_GOVERNANCE_EXCLUDED:
         return "[Governance-excluded source. Content withheld and must not be used.]"
