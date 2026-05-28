@@ -185,17 +185,7 @@ def _source_type_value(unit: models.EvidenceUnit) -> str:
     return str(value)
 
 
-def _clear_evidence_by_source_type_values(db: Session, user_id: str, source_type_values: List[str]) -> int:
-    """Delete connector EvidenceUnits with enum/string-safe matching.
-
-    MySQL + SQLAlchemy Enum columns can be returned as enum objects while manual
-    rows or older migrations may behave like strings. Filtering in Python keeps
-    this cleanup endpoint reliable for local prototype databases.
-    """
-
-    wanted = set(source_type_values)
-    units = db.query(models.EvidenceUnit).filter(models.EvidenceUnit.user_id == user_id).all()
-    unit_ids = [unit.id for unit in units if _source_type_value(unit) in wanted]
+def _delete_evidence_unit_ids(db: Session, user_id: str, unit_ids: List[str]) -> int:
     if not unit_ids:
         return 0
     db.query(models.PolicyRule).filter(
@@ -209,6 +199,20 @@ def _clear_evidence_by_source_type_values(db: Session, user_id: str, source_type
     ).delete(synchronize_session=False)
     db.commit()
     return deleted
+
+
+def _clear_evidence_by_source_type_values(db: Session, user_id: str, source_type_values: List[str]) -> int:
+    """Delete connector EvidenceUnits with enum/string-safe matching.
+
+    MySQL + SQLAlchemy Enum columns can be returned as enum objects while manual
+    rows or older migrations may behave like strings. Filtering in Python keeps
+    this cleanup endpoint reliable for local prototype databases.
+    """
+
+    wanted = set(source_type_values)
+    units = db.query(models.EvidenceUnit).filter(models.EvidenceUnit.user_id == user_id).all()
+    unit_ids = [unit.id for unit in units if _source_type_value(unit) in wanted]
+    return _delete_evidence_unit_ids(db, user_id, unit_ids)
 
 
 @router.delete("/clear/email")
@@ -234,6 +238,23 @@ def clear_browser_history_evidence(user_id: str = Depends(security.get_current_u
     try:
         deleted = _clear_evidence_by_source_type_values(db, user_id, ["BrowserHistory", "ActivityTrace"])
         return {"status": "success", "deleted": deleted, "source_type": "BrowserHistory"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/clear/all")
+def clear_all_evidence(user_id: str = Depends(security.get_current_user_id), db: Session = Depends(get_db)):
+    """Delete all EvidenceUnits for the current user.
+
+    Intended for automated test cleanup and local connector re-testing. It does
+    not disconnect OAuth accounts and does not delete uploaded documents.
+    """
+
+    try:
+        units = db.query(models.EvidenceUnit).filter(models.EvidenceUnit.user_id == user_id).all()
+        deleted = _delete_evidence_unit_ids(db, user_id, [unit.id for unit in units])
+        return {"status": "success", "deleted": deleted, "scope": "all_evidence"}
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
