@@ -199,7 +199,6 @@ def build_governance_context(
     candidate_set: Set[str] = set(candidate_doc_ids)
     direct_set: Set[str] = set(direct_permission_doc_ids)
     aggregate_set: Set[str] = set(aggregate_doc_ids)
-
     decisions: Dict[str, str] = {}
     roles: Dict[str, str] = {}
 
@@ -216,7 +215,6 @@ def build_governance_context(
 
     usable_doc_ids = [doc_id for doc_id, decision in decisions.items() if decision in {USE_FULL, USE_AGGREGATE}]
     denied_doc_ids = [doc_id for doc_id, decision in decisions.items() if decision == USE_DENY]
-
     return {
         "use_decisions": decisions,
         "source_roles": roles,
@@ -228,12 +226,7 @@ def build_governance_context(
 
 
 def classify_chunk_profile(question: str, chunk_text: str, file_name: str, query_profile: Dict[str, Any], base_role: str, use_decision: str) -> Dict[str, Any]:
-    """Compute the full usable-relevance profile for a retrieved chunk.
-
-    The scores are deliberately simple and inspectable. They are not a benchmark;
-    they make every semiotic layer from the paper visible and usable by the
-    generator.
-    """
+    """Compute the full usable-relevance profile for a retrieved chunk."""
 
     text = f"{file_name}\n{chunk_text}"
     lexical_terms = query_profile.get("lexical_terms", [])
@@ -248,7 +241,15 @@ def classify_chunk_profile(question: str, chunk_text: str, file_name: str, query
 
     ontological_links = infer_ontological_links(query_entities, chunk_entities, text)
     pragmatic_match = infer_pragmatic_match(query_profile.get("task_intent"), genres, speech_acts, temporal_signals)
-    refined_role = refine_source_role(base_role, use_decision, genres, speech_acts, temporal_signals, pragmatic_match)
+    refined_role = refine_source_role(
+        base_role=base_role,
+        use_decision=use_decision,
+        genres=genres,
+        speech_acts=speech_acts,
+        temporal_signals=temporal_signals,
+        pragmatic_match=pragmatic_match,
+        task_intent=query_profile.get("task_intent", "general_document_question"),
+    )
 
     scores = {
         "lexical": min(1.0, len(lexical_hits) / max(1, len(lexical_terms))),
@@ -286,7 +287,7 @@ def infer_ontological_links(query_entities: Dict[str, List[str]], chunk_entities
         overlap = set(q_values).intersection(c_values)
         if overlap:
             links.append(f"same_{label}:" + ",".join(sorted(overlap)))
-    relation_keywords = ["manual", "invoice", "warranty", "document", "course", "candidate", "trip", "email", "owner"]
+    relation_keywords = ["manual", "invoice", "warranty", "document", "course", "candidate", "trip", "email", "owner", "project", "codename"]
     for keyword in relation_keywords:
         if keyword in text.lower() and keyword not in links:
             links.append(keyword)
@@ -305,11 +306,22 @@ def infer_pragmatic_match(task_intent: str, genres: List[str], speech_acts: List
     return True
 
 
-def refine_source_role(base_role: str, use_decision: str, genres: List[str], speech_acts: List[str], temporal_signals: List[str], pragmatic_match: bool) -> str:
+def refine_source_role(base_role: str, use_decision: str, genres: List[str], speech_acts: List[str], temporal_signals: List[str], pragmatic_match: bool, task_intent: str = "general_document_question") -> str:
     if use_decision == USE_DENY:
         return SOURCE_ROLE_GOVERNANCE_EXCLUDED
     if use_decision == USE_AGGREGATE:
         return SOURCE_ROLE_AGGREGATE_ONLY
+    if use_decision == USE_METADATA:
+        return SOURCE_ROLE_CONTEXTUAL
+
+    # For ordinary grounded/factual document QA, a full-access owned source remains
+    # primary even if the chunk also contains incidental closed/completed/activity
+    # text. Contrastive/contextual downgrades are task-relevant mainly for action
+    # reconstruction, status checking, and governance reasoning.
+    factual_qa = task_intent in {"general_document_question", "document_question_answering"}
+    if factual_qa and base_role == SOURCE_ROLE_PRIMARY and use_decision == USE_FULL and pragmatic_match:
+        return SOURCE_ROLE_PRIMARY
+
     if any(sig in temporal_signals for sig in ["closed"]) or any(act in speech_acts for act in ["completion", "cancellation"]):
         return SOURCE_ROLE_CONTRASTIVE
     if "activity_trace" in genres or not pragmatic_match:
@@ -362,11 +374,7 @@ def make_context_block(source_profile: Dict[str, Any], file_name: str, chunk_tex
 
 
 def public_source_text(source_role: str, chunk_text: str) -> str:
-    """Return source text that may be shown in the UI.
-
-    Aggregate-only sources may support generation, but the UI must not quote them
-    as individual primary documents.
-    """
+    """Return source text that may be shown in the UI."""
 
     if source_role == SOURCE_ROLE_AGGREGATE_ONLY:
         return "[Aggregate-only source: individual content is hidden; used only as governed aggregate/contextual support.]"
