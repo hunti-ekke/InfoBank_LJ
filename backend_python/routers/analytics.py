@@ -2,12 +2,29 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 import models
+import security
 from database import get_db
 
 router = APIRouter(prefix="/api", tags=["Analytics"])
 
-@router.get("/knowledge-map/{user_id}")
-def get_knowledge_map(user_id: str, db: Session = Depends(get_db)):
+
+@router.get("/knowledge-map/me")
+def get_my_knowledge_map(user_id: str = Depends(security.get_current_user_id), db: Session = Depends(get_db)):
+    return build_knowledge_map(user_id, db)
+
+
+@router.get("/knowledge-map/{requested_user_id}")
+def get_knowledge_map(
+    requested_user_id: str,
+    user_id: str = Depends(security.get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    if requested_user_id != user_id:
+        raise HTTPException(status_code=403, detail="You can only access your own knowledge map.")
+    return build_knowledge_map(user_id, db)
+
+
+def build_knowledge_map(user_id: str, db: Session):
     try:
         results = db.query(
             models.Keyword.word,
@@ -28,8 +45,24 @@ def get_knowledge_map(user_id: str, db: Session = Depends(get_db)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/ontology/{user_id}")
-def get_ontology(user_id: str, db: Session = Depends(get_db)):
+
+@router.get("/ontology/me")
+def get_my_ontology(user_id: str = Depends(security.get_current_user_id), db: Session = Depends(get_db)):
+    return build_ontology(user_id, db)
+
+
+@router.get("/ontology/{requested_user_id}")
+def get_ontology(
+    requested_user_id: str,
+    user_id: str = Depends(security.get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    if requested_user_id != user_id:
+        raise HTTPException(status_code=403, detail="You can only access your own ontology.")
+    return build_ontology(user_id, db)
+
+
+def build_ontology(user_id: str, db: Session):
     try:
         permissions = db.query(models.UserDocumentPermission).filter(models.UserDocumentPermission.user_id == user_id).all()
         doc_ids = [p.document_id for p in permissions]

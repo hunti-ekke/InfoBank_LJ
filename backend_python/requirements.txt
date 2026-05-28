@@ -11,3 +11,7 @@ google-generativeai
 bcrypt==3.2.2
 passlib
 PyJWT
+google-auth
+google-auth-oauthlib
+google-api-python-client
+requests
