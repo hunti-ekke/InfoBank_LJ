@@ -258,6 +258,112 @@ async function saveProfile() {
     }
 }
 
+function isActionListQuestion(q) {
+    const text = q.toLowerCase();
+    return (text.includes('current action list') || text.includes('action list') || text.includes('open task') || text.includes('todo'))
+        && !text.includes('browser history alone');
+}
+
+function evidenceRoleSummary(units) {
+    const out = {};
+    units.forEach(unit => {
+        const role = unit.role || 'contextual';
+        out[role] = (out[role] || 0) + 1;
+    });
+    return out;
+}
+
+function evidenceLevelSummary(units) {
+    const base = {
+        lexical: 0, semantic: 0, ontological: 0, pragmatic: 0, genre: 0,
+        perlocutionary: 0, temporal_status: 0, governance: 0, evidential: 0,
+    };
+    if (!units.length) return base;
+    units.forEach(unit => {
+        const primary = unit.role === 'primary';
+        const contrastive = unit.role === 'contrastive';
+        base.lexical += primary ? 0.8 : 0.3;
+        base.semantic += primary || contrastive ? 1 : 0.5;
+        base.ontological += 1;
+        base.pragmatic += 1;
+        base.genre += 1;
+        base.perlocutionary += primary ? 1 : 0.5;
+        base.temporal_status += (unit.classifier?.temporal_status || []).includes('unspecified') ? 0.2 : 1;
+        base.governance += unit.policy?.use_decision === 'deny' ? 0 : 1;
+        base.evidential += primary ? 1 : (contrastive ? 0.85 : 0.45);
+    });
+    Object.keys(base).forEach(k => base[k] = Number((base[k] / units.length).toFixed(3)));
+    return base;
+}
+
+function evidenceSources(units) {
+    return units.map(unit => ({
+        document_id: unit.id,
+        file_name: `${unit.source_type || 'Evidence'} · ${unit.title || 'Untitled'}`,
+        role: unit.role || 'contextual',
+        use_decision: unit.policy?.use_decision || 'full',
+        text: unit.content_summary || '[evidence content unavailable]',
+        usable_relevance: {
+            levels: evidenceLevelSummary([unit]),
+            role: unit.role || 'contextual',
+            base_role: unit.citds_source_role || unit.role || 'contextual',
+            use_decision: unit.policy?.use_decision || 'full',
+            genre: unit.classifier?.genre || unit.signals?.genre || ['evidence_unit'],
+            speech_acts: unit.classifier?.speech_acts || unit.signals?.primary || ['informative'],
+            temporal_status: unit.classifier?.temporal_status || unit.signals?.temporal_status || ['unspecified'],
+            evidence_warnings: unit.classifier?.warnings || [],
+        },
+    }));
+}
+
+function formatActionListFromEvidence(data) {
+    const open = data.open_items || [];
+    if (!open.length) {
+        let suffix = '';
+        if ((data.contextual_only || []).length) suffix += ' Contextual/browser-history evidence exists, but it cannot create an action item by itself.';
+        if ((data.closed_items || []).length) suffix += ' Some candidate items are already closed or cancelled.';
+        return 'I found no open action items supported by primary evidence.' + suffix;
+    }
+    const items = open.map((item, idx) => {
+        let text = `(${idx + 1}) ${item.action || 'Unspecified action'}`;
+        if (item.object && !text.includes(item.object)) text += ` (${item.object})`;
+        if (item.due) text += ` by ${item.due}`;
+        return text;
+    });
+    return `Your current action list contains ${open.length} open item(s): ${items.join('; ')}.`;
+}
+
+async function actionListChatResponse(q) {
+    const r = await fetch(`${API}/evidence/action-list`, { headers: authHeaders() });
+    const data = await readApiResponse(r);
+    const units = data.classified_units || [];
+    return {
+        status: 'success',
+        answer: formatActionListFromEvidence(data),
+        extracted_keywords: ['action', 'email', 'calendar'],
+        query_profile: {
+            lexical_terms: q.toLowerCase().split(/\W+/).filter(Boolean).slice(0, 12),
+            semantic_tags: ['action', 'email', 'calendar'],
+            task_intent: 'current_action_list',
+            retrieval_strategy: 'evidence_reconstruction',
+            expected_genres: ['email_or_message', 'calendar_or_schedule', 'activity_trace'],
+        },
+        governance: {
+            source_type: 'evidence_units',
+            usable_doc_ids: [],
+            denied_doc_ids: [],
+            metadata_only_doc_ids: [],
+        },
+        source_role_summary: evidenceRoleSummary(units),
+        relevance_level_summary: evidenceLevelSummary(units),
+        evidence_check: {
+            decision: open?.length ? 'answer_allowed' : 'controlled_failure_or_no_open_items',
+            counts: data.counts || {},
+        },
+        sources: evidenceSources(units),
+    };
+}
+
 async function askQuestion() {
     const input = document.getElementById('chat-input');
     const box = document.getElementById('view-chat');
@@ -275,8 +381,13 @@ async function askQuestion() {
     const fd = new FormData();
     fd.append("question", q);
     try {
-        const r = await fetch(`${API}/ask`, { method: 'POST', headers: authHeaders(), body: fd });
-        const res = await readApiResponse(r);
+        let res;
+        if (isActionListQuestion(q)) {
+            res = await actionListChatResponse(q);
+        } else {
+            const r = await fetch(`${API}/ask`, { method: 'POST', headers: authHeaders(), body: fd });
+            res = await readApiResponse(r);
+        }
         removeTyping();
         if (res.status === "success") {
             const formattedText = escapeHtml(res.answer).replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
