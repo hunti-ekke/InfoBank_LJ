@@ -55,8 +55,7 @@
             
             <div class="p-4 border-t bg-gray-50 relative group">
                 <div class="flex items-center space-x-3 overflow-hidden">
-                    <div id="sidebar-avatar-container" class="w-12 h-12 rounded-full border-2 border-white shadow-md flex-shrink-0 flex items-center justify-center overflow-hidden bg-gradient-to-tr from-blue-500 to-indigo-600">
-                    </div>
+                    <div id="sidebar-avatar-container" class="w-12 h-12 rounded-full border-2 border-white shadow-md flex-shrink-0 flex items-center justify-center overflow-hidden bg-gradient-to-tr from-blue-500 to-indigo-600"></div>
                     <div class="flex-1 overflow-hidden">
                         <p id="sidebar-display-username" class="font-bold text-gray-800 truncate">Username</p>
                         <p id="sidebar-display-fullname" class="text-xs text-gray-500 truncate hidden">Full Name</p>
@@ -83,7 +82,6 @@
             </div>
             
             <div id="view-map" class="view-section hidden flex-1 p-8 overflow-y-auto flex flex-wrap gap-4 justify-center items-center bg-gray-50"></div>
-            
             <div id="view-ontology" class="view-section hidden flex-1 relative bg-gray-50 overflow-hidden"></div>
 
             <div id="view-manager" class="view-section hidden flex-1 p-6 overflow-y-auto bg-gray-50">
@@ -93,7 +91,7 @@
                             <tr>
                                 <th class="px-6 py-3 text-left tracking-wider">Document</th>
                                 <th class="px-6 py-3 text-left tracking-wider w-1/2">Keywords</th>
-                                <th class="px-6 py-3 text-left tracking-wider">Rights</th>
+                                <th class="px-6 py-3 text-left tracking-wider">Visibility</th>
                                 <th class="px-6 py-3 text-center tracking-wider">Actions</th>
                             </tr>
                         </thead>
@@ -106,9 +104,8 @@
                     <button id="btn-select-pdf" onclick="document.getElementById('upload-file').click()" class="bg-white border border-blue-200 text-blue-600 px-4 py-2 rounded-lg font-bold hover:bg-blue-100 transition shadow-sm truncate max-w-xs">
                         Select PDF
                     </button>
-                    <select id="upload-permission" class="border rounded-lg p-2 text-sm outline-none focus:ring-2 focus:ring-blue-400">
-                        <option value="Owner">Owner</option>
-                        <option value="Reader">Reader</option>
+                    <select id="upload-permission" class="border rounded-lg p-2 text-sm outline-none focus:ring-2 focus:ring-blue-400" title="Document visibility / governance mode">
+                        <option value="Owner">Owner / Private</option>
                         <option value="Aggregate">Aggregate</option>
                         <option value="Metadata">Metadata Only</option>
                     </select>
@@ -133,8 +130,7 @@
             </div>
             <div class="p-8 space-y-5">
                 <div class="flex justify-center mb-6">
-                    <div id="modal-avatar-preview" class="w-24 h-24 rounded-full border-4 border-white shadow-xl flex items-center justify-center overflow-hidden bg-gradient-to-tr from-blue-500 to-indigo-600">
-                    </div>
+                    <div id="modal-avatar-preview" class="w-24 h-24 rounded-full border-4 border-white shadow-xl flex items-center justify-center overflow-hidden bg-gradient-to-tr from-blue-500 to-indigo-600"></div>
                 </div>
                 <div class="space-y-1">
                     <label class="text-xs font-semibold text-gray-500 uppercase tracking-wider">Full Name</label>
