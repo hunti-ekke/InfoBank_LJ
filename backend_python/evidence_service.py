@@ -7,6 +7,7 @@ accepted.
 """
 
 import datetime
+import hashlib
 import json
 import re
 import uuid
@@ -24,6 +25,23 @@ ACTION_ROLE_PRIMARY = "primary"
 ACTION_ROLE_CONTEXTUAL = "contextual"
 ACTION_ROLE_CONTRASTIVE = "contrastive"
 ACTION_ROLE_EXCLUDED = "governance-excluded"
+
+ACTION_VERBS = ["review", "announce", "book", "answer", "reply", "prepare", "submit", "send"]
+NON_ACTION_PATTERNS = [
+    r"temporary\s+chatgpt\s+login\s+code",
+    r"login\s+code",
+    r"verification\s+code",
+    r"multi-factor\s+authentication",
+    r"two-factor\s+authentication",
+    r"security\s+alert",
+    r"third-party\s+github\s+application\s+has\s+been\s+added",
+    r"application\s+has\s+been\s+added\s+to\s+your\s+account",
+    r"if\s+you\s+did\s+not\s+make\s+this\s+request",
+    r"unsubscribe",
+    r"category_promotions",
+    r"k[eé]szlet(?:riaszt[aá]s)?",
+    r"legn[eé]pszer[uű]bb\s+iphone",
+]
 
 
 def parse_timestamp(value: Optional[str]) -> Optional[datetime.datetime]:
@@ -60,6 +78,42 @@ def import_evidence_units(db: Session, user_id: str, units: Iterable[Dict[str, A
     return created
 
 
+def _metadata(unit: models.EvidenceUnit) -> Dict[str, Any]:
+    try:
+        return json.loads(unit.metadata_json or "{}")
+    except Exception:
+        return {}
+
+
+def _dedupe_key(unit: models.EvidenceUnit) -> str:
+    meta = _metadata(unit)
+    connector = meta.get("connector")
+    message_id = meta.get("message_id")
+    if connector in {"gmail", "gmail_oauth"} and message_id:
+        return f"gmail-message:{message_id}"
+    fingerprint = hashlib.sha1(
+        f"{unit.user_id}|{unit.source_type}|{unit.title}|{unit.content}|{unit.relation_key}".encode("utf-8", errors="ignore")
+    ).hexdigest()
+    return f"evidence:{fingerprint}"
+
+
+def dedupe_evidence_units(units: Iterable[models.EvidenceUnit]) -> List[models.EvidenceUnit]:
+    """Keep one copy of each imported external evidence item.
+
+    Re-running Gmail sync should not inflate the evidence set or the UI trace with
+    duplicate message imports. The newest local row wins so manual re-syncs remain
+    visible if metadata changes.
+    """
+
+    by_key: Dict[str, models.EvidenceUnit] = {}
+    for unit in units:
+        key = _dedupe_key(unit)
+        current = by_key.get(key)
+        if not current or (unit.created_at or datetime.datetime.min) >= (current.created_at or datetime.datetime.min):
+            by_key[key] = unit
+    return list(by_key.values())
+
+
 def _citds_role_to_action_role(source_role: str, source_type: str, use_decision: str) -> str:
     if use_decision == relevance.USE_DENY or source_role == relevance.SOURCE_ROLE_GOVERNANCE_EXCLUDED:
         return ACTION_ROLE_EXCLUDED
@@ -74,6 +128,37 @@ def _citds_role_to_action_role(source_role: str, source_type: str, use_decision:
     if source_role == relevance.SOURCE_ROLE_AGGREGATE_ONLY:
         return ACTION_ROLE_CONTEXTUAL
     return ACTION_ROLE_CONTEXTUAL
+
+
+def is_non_action_notification(text: str) -> bool:
+    lowered = text.lower()
+    return any(re.search(pattern, lowered, flags=re.IGNORECASE) for pattern in NON_ACTION_PATTERNS)
+
+
+def is_unowned_outbound_request(text: str) -> bool:
+    lowered = text.lower()
+    if "direction: outbound" not in lowered:
+        return False
+    if any(marker in lowered for marker in ["i will", "i'll", "i commit", "committed", "accepted"]):
+        return False
+    # An outbound "please review" is usually a request to somebody else, not the
+    # user's own open task. It may still be contextual support for a thread.
+    return any(re.search(rf"\bplease\s+{verb}\b", lowered) for verb in ACTION_VERBS)
+
+
+def has_obligation_signal(text: str) -> bool:
+    lowered = text.lower()
+    if is_non_action_notification(text):
+        return False
+    if "action:" in lowered or "official request" in lowered:
+        return True
+    if any(re.search(rf"\bplease\s+{verb}\b", lowered) for verb in ACTION_VERBS):
+        return True
+    if any(re.search(rf"\b{verb}\b", lowered) for verb in ACTION_VERBS) and any(marker in lowered for marker in ["deadline", "due", " by 20"]):
+        return True
+    if any(marker in lowered for marker in ["must", "required", "assigned", "obligation", "reminder", "overdue"]):
+        return True
+    return False
 
 
 def classify_evidence_unit(unit: models.EvidenceUnit, policy_resolution: Dict[str, Any] | None = None) -> Dict[str, Any]:
@@ -96,6 +181,21 @@ def classify_evidence_unit(unit: models.EvidenceUnit, policy_resolution: Dict[st
     )
 
     action_role = _citds_role_to_action_role(classifier_result.get("source_role"), source_type, use_decision)
+    warnings = classifier_result.setdefault("warnings", [])
+    if use_decision != relevance.USE_METADATA and action_role == ACTION_ROLE_PRIMARY:
+        if is_non_action_notification(text):
+            action_role = ACTION_ROLE_CONTEXTUAL
+            classifier_result["source_role"] = relevance.SOURCE_ROLE_CONTEXTUAL
+            warnings.append("non_action_system_or_marketing_notification")
+        elif is_unowned_outbound_request(text):
+            action_role = ACTION_ROLE_CONTEXTUAL
+            classifier_result["source_role"] = relevance.SOURCE_ROLE_CONTEXTUAL
+            warnings.append("outbound_request_contextual_not_user_obligation")
+        elif not has_obligation_signal(text):
+            action_role = ACTION_ROLE_CONTEXTUAL
+            classifier_result["source_role"] = relevance.SOURCE_ROLE_CONTEXTUAL
+            warnings.append("no_explicit_user_obligation_signal")
+
     status = "unknown"
     if action_role == ACTION_ROLE_EXCLUDED:
         status = "governance_excluded"
@@ -149,15 +249,31 @@ def extract_due_date(text: str) -> Optional[str]:
     return None
 
 
+def _clean_action(value: str) -> str:
+    value = re.sub(r"\s+", " ", value).strip(" .:-")
+    value = re.sub(r"^please\s+", "", value, flags=re.IGNORECASE)
+    value = re.sub(r"^action\s*[:\-]\s*", "", value, flags=re.IGNORECASE)
+    return value[:160]
+
+
 def extract_action_text(text: str) -> str:
     match = re.search(r"Action[:\s]+([^\n\.]+)", text, flags=re.IGNORECASE)
     if match:
-        return match.group(1).strip()
+        return _clean_action(match.group(1))
+
+    subject_match = re.search(r"Subject:\s*(please\s+(?:review|announce|book|answer|reply|prepare|submit|send)[^\.\n]*)", text, flags=re.IGNORECASE)
+    if subject_match:
+        return _clean_action(subject_match.group(1))
+
+    please_match = re.search(r"\bplease\s+(review|announce|book|answer|reply|prepare|submit|send)\b([^\.\n]*)", text, flags=re.IGNORECASE)
+    if please_match:
+        return _clean_action(" ".join(part for part in please_match.groups() if part))
+
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     for line in lines:
         low = line.lower()
-        if any(word in low for word in ["review", "announce", "book", "answer", "reply", "prepare", "submit", "send"]):
-            return line[:160]
+        if any(word in low for word in ACTION_VERBS):
+            return _clean_action(line[:160])
     return lines[0][:160] if lines else "Unspecified action"
 
 
@@ -181,8 +297,24 @@ def summarize_text(text: str, max_len: int = 220) -> str:
     return clean[:max_len] + ("..." if len(clean) > max_len else "")
 
 
+def _normalise_action_key(value: str) -> str:
+    value = value.lower()
+    value = re.sub(r"[^a-z0-9]+", " ", value)
+    value = re.sub(r"\b(please|gmail|message|direction|inbound|outbound|subject|body)\b", " ", value)
+    return re.sub(r"\s+", " ", value).strip()[:120]
+
+
+def _group_key(item: Dict[str, Any]) -> str:
+    if item.get("role") in {ACTION_ROLE_PRIMARY, ACTION_ROLE_CONTRASTIVE} and item.get("action"):
+        action_key = _normalise_action_key(item.get("action") or "")
+        if action_key and action_key != "unspecified action":
+            return f"action:{action_key}|due:{item.get('due') or ''}"
+    return item.get("relation_key") or item["id"]
+
+
 def reconstruct_action_list(db: Session, user_id: str) -> Dict[str, Any]:
-    units = db.query(models.EvidenceUnit).filter(models.EvidenceUnit.user_id == user_id).all()
+    raw_units = db.query(models.EvidenceUnit).filter(models.EvidenceUnit.user_id == user_id).all()
+    units = dedupe_evidence_units(raw_units)
     unit_ids = [unit.id for unit in units]
     policy_context = policy_engine.resolve_evidence_unit_access_bulk(
         db=db,
@@ -214,7 +346,7 @@ def reconstruct_action_list(db: Session, user_id: str) -> Dict[str, Any]:
 
     grouped: Dict[str, Dict[str, Any]] = {}
     for item in classified:
-        key = item.get("relation_key") or item["id"]
+        key = _group_key(item)
         if key not in grouped:
             grouped[key] = {
                 "relation_key": key,
@@ -308,6 +440,7 @@ def reconstruct_action_list(db: Session, user_id: str) -> Dict[str, Any]:
             "metadata_only": len(metadata_only),
             "excluded_only": len(excluded_only),
             "evidence_units": len(classified),
+            "raw_evidence_units": len(raw_units),
         },
         "classified_units": classified,
     }
