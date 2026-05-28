@@ -39,16 +39,17 @@ def gmail_auth_url(user_id: str = Depends(security.get_current_user_id)):
 def gmail_callback(request: Request, db: Session = Depends(get_db)):
     """OAuth callback.
 
-    The OAuth state carries the InfoBank user_id. In production this should be a
-    signed short-lived state token; for the prototype it is enough to complete
-    the CITDS connector path.
+    State carries the InfoBank user_id and the PKCE code_verifier for the local
+    prototype OAuth flow. Production should use a signed, short-lived state token
+    and encrypted token storage.
     """
 
-    user_id = request.query_params.get("state")
-    if not user_id:
+    raw_state = request.query_params.get("state")
+    if not raw_state:
         raise HTTPException(status_code=400, detail="Missing OAuth state.")
+    user_id, code_verifier = gmail_connector.decode_state(raw_state)
     try:
-        account = gmail_connector.store_callback_tokens(db, user_id, str(request.url))
+        account = gmail_connector.store_callback_tokens(db, user_id, str(request.url), code_verifier=code_verifier)
         return {
             "status": "success",
             "message": "Gmail connected. You can close this tab and return to InfoBank.",
