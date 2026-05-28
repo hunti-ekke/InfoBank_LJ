@@ -14,6 +14,10 @@ function escapeHtml(value) {
         .replaceAll("'", '&#039;');
 }
 
+function authHeaders(extra = {}) {
+    return { ...extra, 'Authorization': `Bearer ${ACCESS_TOKEN}` };
+}
+
 function saveSession(userId, token) {
     CURRENT_USER_ID = userId;
     ACCESS_TOKEN = token;
@@ -185,7 +189,7 @@ async function doLogin() {
 async function loadProfile() {
     try {
         if (!ACCESS_TOKEN) return false;
-        const r = await fetch(`${API}/profile/me`, { headers: { 'Authorization': `Bearer ${ACCESS_TOKEN}` } });
+        const r = await fetch(`${API}/profile/me`, { headers: authHeaders() });
         const user = await r.json();
         if(!r.ok) throw new Error(user.detail);
 
@@ -215,7 +219,7 @@ async function saveProfile() {
     try {
         const r = await fetch(`${API}/profile/update`, {
             method: 'PUT',
-            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${ACCESS_TOKEN}` },
+            headers: authHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify(data)
         });
         if(r.ok) { alert("Profile updated successfully!"); closeProfileModal(); loadProfile(); } 
@@ -234,9 +238,9 @@ async function askQuestion() {
     input.value = ""; input.disabled = true; btn.disabled = true;
     box.scrollTop = box.scrollHeight; showTyping();
 
-    const fd = new FormData(); fd.append("question", q); fd.append("user_id", CURRENT_USER_ID);
+    const fd = new FormData(); fd.append("question", q);
     try {
-        const r = await fetch(`${API}/ask`, { method: 'POST', body: fd });
+        const r = await fetch(`${API}/ask`, { method: 'POST', headers: authHeaders(), body: fd });
         const res = await r.json(); removeTyping();
         if (r.ok) {
             if (res.status === "success") {
@@ -294,11 +298,11 @@ async function uploadDocument() {
     const fd = new FormData(); const fileInput = document.getElementById('upload-file');
     if(!fileInput.files[0]) return alert("Please select a file first.");
 
-    fd.append("file", fileInput.files[0]); fd.append("user_id", CURRENT_USER_ID); fd.append("permission_type", document.getElementById('upload-permission').value);
+    fd.append("file", fileInput.files[0]); fd.append("permission_type", document.getElementById('upload-permission').value);
     const btn = document.getElementById('btn-upload'); btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i> Ingesting...';
     
     try {
-        const r = await fetch(`${API}/upload`, { method: 'POST', body: fd });
+        const r = await fetch(`${API}/upload`, { method: 'POST', headers: authHeaders(), body: fd });
         if(r.ok) { alert("Document vectorized successfully!"); loadDocs(); } 
         else { const err = await r.json(); alert("Error: " + err.detail); }
     } catch(e) { alert("Upload failed."); }
@@ -306,9 +310,9 @@ async function uploadDocument() {
 }
 
 async function loadDocs() {
-    const r = await fetch(`${API}/documents/${CURRENT_USER_ID}`); const data = await r.json();
+    const r = await fetch(`${API}/documents/me`, { headers: authHeaders() }); const data = await r.json();
     const tbody = document.getElementById('docs-tbody'); tbody.innerHTML = "";
-        data.documents.forEach(doc => {
+    data.documents.forEach(doc => {
         const isOwner = doc.is_owner === true;
         const iconClass = isOwner ? 'fa-trash-alt' : 'fa-unlink';
         const iconTitle = isOwner ? 'Permanent Delete' : 'Unsubscribe';
@@ -327,14 +331,23 @@ async function loadDocs() {
     });
 }
 
-async function saveKW(id) { const fd = new FormData(); fd.append("doc_id", id); fd.append("keywords", document.getElementById('kw-'+id).value); await fetch(`${API}/documents/update-keywords`, { method: 'POST', body: fd }); alert("Keywords updated!"); }
-async function savePerm(id, p) { const fd = new FormData(); fd.append("doc_id", id); fd.append("user_id", CURRENT_USER_ID); fd.append("new_perm", p); await fetch(`${API}/documents/update-permission`, { method: 'POST', body: fd }); alert("Permission updated!"); loadDocs(); }
+async function saveKW(id) {
+    const fd = new FormData(); fd.append("doc_id", id); fd.append("keywords", document.getElementById('kw-'+id).value);
+    await fetch(`${API}/documents/update-keywords`, { method: 'POST', headers: authHeaders(), body: fd });
+    alert("Keywords updated!");
+}
+
+async function savePerm(id, p) {
+    const fd = new FormData(); fd.append("doc_id", id); fd.append("new_perm", p);
+    await fetch(`${API}/documents/update-permission`, { method: 'POST', headers: authHeaders(), body: fd });
+    alert("Permission updated!"); loadDocs();
+}
 
 async function deleteDoc(id, isOwnerStr) {
     const isOwner = isOwnerStr === 'true';
     if (!confirm(isOwner ? "WARNING: Permanently delete document and AI vectors?" : "Unsubscribe from document?")) return;
-    const fd = new FormData(); fd.append("doc_id", id); fd.append("user_id", CURRENT_USER_ID); 
-    try { const r = await fetch(`${API}/documents/delete`, { method: 'DELETE', body: fd }); if(r.ok) { loadDocs(); loadMap(); } else alert("Error"); } catch(e) { alert("Server error"); }
+    const fd = new FormData(); fd.append("doc_id", id); 
+    try { const r = await fetch(`${API}/documents/delete`, { method: 'DELETE', headers: authHeaders(), body: fd }); if(r.ok) { loadDocs(); loadMap(); } else alert("Error"); } catch(e) { alert("Server error"); }
 }
 
 async function submitTransfer() {
@@ -349,11 +362,10 @@ async function submitTransfer() {
         
         const formData = new FormData();
         formData.append("doc_id", docId);
-        formData.append("user_id", CURRENT_USER_ID);
         formData.append("new_username", newUsername);
 
         try {
-            const response = await fetch(`${API}/documents/transfer`, { method: 'POST', body: formData });
+            const response = await fetch(`${API}/documents/transfer`, { method: 'POST', headers: authHeaders(), body: formData });
             const result = await response.json();
             if (response.ok) {
                 alert(result.message); closeTransferModal(); loadDocs();
@@ -364,7 +376,7 @@ async function submitTransfer() {
 }
 
 async function loadMap() {
-    const r = await fetch(`${API}/knowledge-map/${CURRENT_USER_ID}`); const data = await r.json();
+    const r = await fetch(`${API}/knowledge-map/me`, { headers: authHeaders() }); const data = await r.json();
     const box = document.getElementById('view-map'); box.innerHTML = "";
     if (data.map.length === 0) return box.innerHTML = '<div class="text-gray-500">Empty map.</div>';
     data.map.forEach(k => {
