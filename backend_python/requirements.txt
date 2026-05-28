@@ -9,3 +9,5 @@ chromadb
 python-multipart
 google-generativeai
 bcrypt==3.2.2
+passlib
+PyJWT
