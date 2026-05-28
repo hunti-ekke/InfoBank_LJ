@@ -1,5 +1,3 @@
-from typing import Optional
-
 from fastapi import APIRouter, Depends, Form, HTTPException
 from sqlalchemy.orm import Session
 
@@ -101,4 +99,17 @@ def resolve_document_policy(
     return {
         "status": "success",
         "resolution": policy_engine.resolve_document_access(db, user_id, doc_id, purpose),
+    }
+
+
+@router.get("/resolve/evidence-unit/{unit_id}")
+def resolve_evidence_unit_policy(
+    unit_id: str,
+    purpose: str = "action_reconstruction",
+    user_id: str = Depends(security.get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    return {
+        "status": "success",
+        "resolution": policy_engine.resolve_evidence_unit_access(db, user_id, unit_id, purpose),
     }
