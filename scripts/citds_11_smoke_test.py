@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Automated CITDS 11 smoke test.
+"""Automated CITDS 11 smoke test with cleanup.
 
 Run against a local backend:
 
     cd backend_python
-    uvicorn main:app --reload
+    python -m uvicorn main:app --reload
 
 Then in another terminal:
 
@@ -13,6 +13,15 @@ Then in another terminal:
 The test creates two users, uploads a generated PDF, checks Owner/Aggregate/
 Metadata behavior, seeds evidence units, tests classifier, browser-history upload,
 and prints a PASS/FAIL summary.
+
+By default it cleans up the artifacts it created:
+- uploaded smoke-test document and vector chunks
+- EvidenceUnits created for the smoke owner
+- temporary local PDF/browser-history files
+
+The registered test users are intentionally left in the DB because the current
+public API has no user-delete endpoint. They use unique citds_* emails and can be
+ignored or removed manually from phpMyAdmin if needed.
 """
 
 from __future__ import annotations
@@ -39,14 +48,17 @@ class SmokeFailure(Exception):
 
 
 class Smoke:
-    def __init__(self, api_base: str):
+    def __init__(self, api_base: str, cleanup_enabled: bool = True):
         self.api = api_base.rstrip("/")
+        self.cleanup_enabled = cleanup_enabled
         self.results: List[Dict[str, Any]] = []
+        self.cleanup_results: List[Dict[str, Any]] = []
         self.owner_token = ""
         self.reader_token = ""
         self.owner_id = ""
         self.reader_id = ""
         self.doc_id = ""
+        self.temp_files: List[Path] = []
 
     def step(self, name: str, func):
         print(f"\n[TEST] {name}")
@@ -59,6 +71,18 @@ class Smoke:
             self.results.append({"name": name, "status": "FAIL", "error": str(e)})
             print(f"[FAIL] {name}: {e}")
             raise
+
+    def cleanup_step(self, name: str, func):
+        print(f"\n[CLEANUP] {name}")
+        try:
+            value = func()
+            self.cleanup_results.append({"name": name, "status": "PASS", "details": value})
+            print(f"[CLEANUP PASS] {name}")
+            return value
+        except Exception as e:
+            self.cleanup_results.append({"name": name, "status": "FAIL", "error": str(e)})
+            print(f"[CLEANUP FAIL] {name}: {e}")
+            return None
 
     def request(self, method: str, path: str, *, token: str | None = None, expected: int = 200, **kwargs) -> requests.Response:
         headers = kwargs.pop("headers", {}) or {}
@@ -108,13 +132,14 @@ The total aggregate count was 25 pilot cases.
 Browser history note:
 Browser history and activity traces can provide contextual support only. They cannot create an action item by themselves.
 """.strip()
-        out = Path(tempfile.gettempdir()) / "citds_11_smoke_test.pdf"
+        out = Path(tempfile.gettempdir()) / f"citds_11_smoke_test_{os.getpid()}.pdf"
         doc = fitz.open()
         page = doc.new_page()
         rect = fitz.Rect(50, 50, 550, 780)
         page.insert_textbox(rect, text, fontsize=11)
         doc.save(out)
         doc.close()
+        self.temp_files.append(out)
         return out
 
     def upload_owner_pdf(self):
@@ -247,8 +272,9 @@ Browser history and activity traces can provide contextual support only. They ca
                 "relation_key": "kosice-trip",
             }
         ]
-        path = Path(tempfile.gettempdir()) / "citds_history.json"
+        path = Path(tempfile.gettempdir()) / f"citds_history_{os.getpid()}.json"
         path.write_text(json.dumps(payload), encoding="utf-8")
+        self.temp_files.append(path)
         with path.open("rb") as f:
             data = self.request(
                 "POST",
@@ -274,6 +300,49 @@ Browser history and activity traces can provide contextual support only. They ca
             raise SmokeFailure(f"Expected implementation coverage >= .95, got {coverage}: {data}")
         return data.get("summary")
 
+    def cleanup_documents(self):
+        if not self.doc_id or not self.owner_token:
+            return {"skipped": True, "reason": "no uploaded document tracked"}
+        try:
+            self.set_visibility("Owner")
+        except Exception:
+            pass
+        response = self.request(
+            "DELETE",
+            "/documents/delete",
+            token=self.owner_token,
+            data={"doc_id": self.doc_id},
+        )
+        return response.json()
+
+    def cleanup_evidence(self):
+        if not self.owner_token:
+            return {"skipped": True, "reason": "no owner token"}
+        return self.request("DELETE", "/evidence/clear/all", token=self.owner_token).json()
+
+    def cleanup_temp_files(self):
+        deleted = []
+        missing = []
+        for path in self.temp_files:
+            try:
+                if path.exists():
+                    path.unlink()
+                    deleted.append(str(path))
+                else:
+                    missing.append(str(path))
+            except Exception as exc:
+                raise SmokeFailure(f"Could not delete temp file {path}: {exc}")
+        return {"deleted": deleted, "missing": missing}
+
+    def cleanup(self):
+        if not self.cleanup_enabled:
+            print("\n[CLEANUP] skipped because --no-cleanup was set")
+            return []
+        self.cleanup_step("clear generated evidence units", self.cleanup_evidence)
+        self.cleanup_step("delete uploaded smoke-test document", self.cleanup_documents)
+        self.cleanup_step("delete local temp files", self.cleanup_temp_files)
+        return self.cleanup_results
+
     def run(self):
         self.step("backend health", lambda: self.request("GET", "/test-db").json())
         self.step("register and login two users", self.register_login_users)
@@ -297,24 +366,27 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--api", default=os.getenv("INFOBANK_API", DEFAULT_API))
     parser.add_argument("--json-out", default="")
+    parser.add_argument("--no-cleanup", action="store_true", help="Leave uploaded test document/evidence/temp files for debugging.")
     args = parser.parse_args()
 
-    smoke = Smoke(args.api)
+    smoke = Smoke(args.api, cleanup_enabled=not args.no_cleanup)
+    exit_code = 0
     try:
         results = smoke.run()
     except Exception:
         results = smoke.results
+        exit_code = 1
         print("\n=== CITDS 11 SMOKE TEST FAILED ===")
-        print(json.dumps(results, indent=2, ensure_ascii=False))
-        if args.json_out:
-            Path(args.json_out).write_text(json.dumps(results, indent=2, ensure_ascii=False), encoding="utf-8")
-        return 1
+    else:
+        print("\n=== CITDS 11 SMOKE TEST PASSED ===")
+    finally:
+        cleanup_results = smoke.cleanup()
 
-    print("\n=== CITDS 11 SMOKE TEST PASSED ===")
-    print(json.dumps(results, indent=2, ensure_ascii=False))
+    payload = {"tests": results, "cleanup": cleanup_results}
+    print(json.dumps(payload, indent=2, ensure_ascii=False))
     if args.json_out:
-        Path(args.json_out).write_text(json.dumps(results, indent=2, ensure_ascii=False), encoding="utf-8")
-    return 0
+        Path(args.json_out).write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    return exit_code
 
 
 if __name__ == "__main__":
