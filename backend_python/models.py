@@ -114,6 +114,23 @@ class PolicyRule(Base):
     valid_until = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
+class ConnectorAccount(Base):
+    """OAuth connector account state for external evidence sources.
+
+    Used by the Gmail connector. Tokens are stored as JSON for the prototype;
+    production should encrypt this column or move it to a secrets vault.
+    """
+
+    __tablename__ = "connector_accounts"
+    id = Column(String(36), primary_key=True)
+    user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    provider = Column(String(50), nullable=False, index=True)
+    status = Column(String(50), nullable=False, default="connected")
+    token_json = Column(Text, nullable=False)
+    metadata_json = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+
 class AuditLog(Base):
     __tablename__ = "audit_logs"
     id = Column(String(50), primary_key=True, index=True)
