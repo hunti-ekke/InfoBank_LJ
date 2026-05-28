@@ -17,6 +17,7 @@ def log_chat_event(db: Session, user_id: str, question: str, answer: str, keywor
         "extracted_keywords": keywords,
         "query_profile": query_profile or {},
         "source_roles": relevance.summarize_source_roles(sources) if sources else {},
+        "relevance_levels": relevance.summarize_relevance_levels(sources) if sources else {},
         "sources_used": [s["file_name"] for s in sources] if sources else [],
         "governance": governance or {},
         "status": status
@@ -33,14 +34,7 @@ def log_chat_event(db: Session, user_id: str, question: str, answer: str, keywor
 
 
 def get_permitted_fallback_doc_ids(db: Session, user_id: str) -> list[str]:
-    """Return a conservative fallback corpus for lexical/keyword misses.
-
-    The CITDS model keeps lexical/semantic routing, but a strict keyword gate can
-    drop valid questions when upload-time keywords missed identifiers such as a
-    codename. This fallback searches only documents the user may use directly and
-    documents exposed as Aggregate. It never adds private documents owned by
-    other users.
-    """
+    """Return a conservative fallback corpus for lexical/keyword misses."""
 
     direct_records = db.query(models.UserDocumentPermission.document_id).filter(
         models.UserDocumentPermission.user_id == user_id
@@ -163,25 +157,40 @@ async def ask_infobank(
                 doc_id = meta.get("document_id")
                 doc_record = db.query(models.Document).filter(models.Document.id == doc_id).first()
                 file_name = doc_record.file_path if doc_record else "Unknown document"
-                role = governance_context["source_roles"].get(doc_id, relevance.SOURCE_ROLE_CONTEXTUAL)
+                base_role = governance_context["source_roles"].get(doc_id, relevance.SOURCE_ROLE_CONTEXTUAL)
                 use_decision = governance_context["use_decisions"].get(doc_id, relevance.USE_DENY)
+                source_profile = relevance.classify_chunk_profile(
+                    question=question,
+                    chunk_text=chunk_text,
+                    file_name=file_name,
+                    query_profile=query_profile,
+                    base_role=base_role,
+                    use_decision=use_decision,
+                )
+                role = source_profile["role"]
 
-                context_blocks.append(relevance.make_context_block(role, file_name, chunk_text))
+                context_blocks.append(relevance.make_context_block(source_profile, file_name, chunk_text))
                 sources_list.append({
                     "document_id": doc_id,
                     "file_name": file_name,
                     "role": role,
                     "use_decision": use_decision,
+                    "usable_relevance": source_profile,
                     "text": relevance.public_source_text(role, chunk_text)
                 })
 
         context_text = "\n\n---\n\n".join(context_blocks)
+        role_summary = relevance.summarize_source_roles(sources_list)
+        relevance_level_summary = relevance.summarize_relevance_levels(sources_list)
 
         system_instruction = (
             "You are a precise InfoBank data analysis expert. Answer ONLY based on the provided context. "
             "CRITICAL RULE: Answer in the exact same language as the question was given in. "
             "Do not translate the answer to another language unless explicitly requested. "
-            "Use source-role labels strictly: primary sources may support direct claims; aggregate-only sources may support only governed aggregate or cautious contextual statements; contextual or analogical sources must not be presented as proof. "
+            "Use the full usable-relevance profile: lexical, semantic, ontological, pragmatic, genre, perlocutionary, temporal/status, governance, and evidential. "
+            "Primary sources may support direct claims. Aggregate-only sources may support only governed aggregate or cautious contextual statements. "
+            "Contextual, analogical, and activity-trace-like sources must not create obligations by themselves. "
+            "Contrastive sources may close, cancel, or weaken a candidate claim. "
             "If there is no primary evidence for a precise claim, explicitly say that the answer is based on limited or aggregate/contextual evidence. "
             "If the information is missing or unclear, answer strictly with: 'The answer cannot be found in the document.' "
             "No hallucinations are allowed."
@@ -191,7 +200,7 @@ async def ask_infobank(
             model=ai_service.MODEL_NAME,
             messages=[
                 {"role": "system", "content": system_instruction},
-                {"role": "user", "content": f"Question: {question}\n\nQuery profile:\n{json.dumps(query_profile, ensure_ascii=False)}\n\nGovernance/source-role summary:\n{json.dumps(governance_context, ensure_ascii=False)}\n\nContext from the document(s):\n{context_text}"}
+                {"role": "user", "content": f"Question: {question}\n\nQuery profile:\n{json.dumps(query_profile, ensure_ascii=False)}\n\nGovernance/source-role summary:\n{json.dumps(governance_context, ensure_ascii=False)}\n\nSource role summary:\n{json.dumps(role_summary, ensure_ascii=False)}\n\nRelevance level summary:\n{json.dumps(relevance_level_summary, ensure_ascii=False)}\n\nContext from the document(s):\n{context_text}"}
             ],
             temperature=0.1
         )
@@ -203,7 +212,6 @@ async def ask_infobank(
         else:
             final_status = "success"
 
-        role_summary = relevance.summarize_source_roles(sources_list)
         background_tasks.add_task(
             log_chat_event,
             db,
@@ -224,6 +232,7 @@ async def ask_infobank(
             "query_profile": query_profile,
             "governance": governance_context,
             "source_role_summary": role_summary,
+            "relevance_level_summary": relevance_level_summary,
             "searched_documents_count": len(all_allowed_docs),
             "answer": answer,
             "sources": sources_list
