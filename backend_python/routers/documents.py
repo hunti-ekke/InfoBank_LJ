@@ -20,6 +20,21 @@ def require_owner(db: Session, doc_id: str, user_id: str) -> models.UserDocument
     return perm_record
 
 
+def visibility_from_permission(permission_type: models.PermissionType | str) -> str:
+    value = permission_type.value if hasattr(permission_type, "value") else str(permission_type)
+    if value == "Aggregate":
+        return "Aggregate"
+    if value == "Metadata":
+        return "Metadata"
+    return "Private"
+
+
+def display_permission(doc: models.Document, permission: models.UserDocumentPermission) -> str:
+    if doc.visibility in {"Aggregate", "Metadata"}:
+        return doc.visibility
+    return permission.permission_type.value if hasattr(permission.permission_type, "value") else str(permission.permission_type)
+
+
 @router.post("/upload")
 async def upload_document(
     file: UploadFile = File(...),
@@ -43,21 +58,19 @@ async def upload_document(
         """
         
         text_for_analysis = full_text[:10000]
-        
         completion = ai_service.openai_client.chat.completions.create(
             model=ai_service.MODEL_NAME,
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": text_for_analysis}
+                {"role": "user", "content": text_for_analysis},
             ],
-            temperature=0.3
+            temperature=0.3,
         )
-        
         raw_keywords = [k.strip().lower() for k in completion.choices[0].message.content.split(',') if k.strip()]
         keyword_list = list(set(raw_keywords))
 
         doc_id = str(uuid.uuid4())
-        doc_visibility = "Aggregate" if permission_type.value == "Aggregate" else "Private"
+        doc_visibility = visibility_from_permission(permission_type)
         db.add(models.Document(id=doc_id, file_path=file.filename, visibility=doc_visibility))
         db.add(models.UserDocumentPermission(id=str(uuid.uuid4()), user_id=user_id, document_id=doc_id, permission_type=models.PermissionType.Owner))
 
@@ -70,18 +83,15 @@ async def upload_document(
             db.add(models.DocumentKeyword(document_id=doc_id, keyword_id=db_kw.id))
 
         chunks = ai_service.chunk_text(full_text)
-
         for i, chunk in enumerate(chunks):
             response = ai_service.openai_client.embeddings.create(input=chunk, model=ai_service.EMBEDDING_MODEL)
             embedding_vector = response.data[0].embedding
             chunk_id = str(uuid.uuid4())
-            ai_service.collection.add(
-                ids=[chunk_id], embeddings=[embedding_vector], metadatas=[{"document_id": doc_id}], documents=[chunk]
-            )
+            ai_service.collection.add(ids=[chunk_id], embeddings=[embedding_vector], metadatas=[{"document_id": doc_id}], documents=[chunk])
             db.add(models.DocumentChunk(id=chunk_id, document_id=doc_id, chunk_index=i, text_content=chunk, vector_id=chunk_id))
 
         db.commit()
-        return {"status": "success", "keywords": keyword_list, "document_id": doc_id}
+        return {"status": "success", "keywords": keyword_list, "document_id": doc_id, "visibility": doc_visibility}
     except HTTPException:
         db.rollback()
         raise
@@ -96,11 +106,7 @@ def get_my_documents(user_id: str = Depends(security.get_current_user_id), db: S
 
 
 @router.get("/documents/{requested_user_id}")
-def get_user_documents(
-    requested_user_id: str,
-    user_id: str = Depends(security.get_current_user_id),
-    db: Session = Depends(get_db),
-):
+def get_user_documents(requested_user_id: str, user_id: str = Depends(security.get_current_user_id), db: Session = Depends(get_db)):
     if requested_user_id != user_id:
         raise HTTPException(status_code=403, detail="You can only access your own document list.")
     return build_document_list(user_id, db)
@@ -116,14 +122,14 @@ def build_document_list(user_id: str, db: Session):
                 continue
             kw_records = db.query(models.Keyword.word).join(models.DocumentKeyword, models.Keyword.id == models.DocumentKeyword.keyword_id).filter(models.DocumentKeyword.document_id == doc.id).all()
             keywords = [k[0] for k in kw_records]
-            display_perm = "Aggregate" if doc.visibility == "Aggregate" else p.permission_type.value
             doc_list.append({
                 "document_id": doc.id,
                 "file_name": doc.file_path,
-                "permission": display_perm,
+                "permission": display_permission(doc, p),
+                "visibility": doc.visibility,
                 "is_owner": p.permission_type.value == "Owner",
                 "keywords": keywords,
-                "upload_date": doc.upload_date.strftime("%Y-%m-%d %H:%M") if doc.upload_date else "N/A"
+                "upload_date": doc.upload_date.strftime("%Y-%m-%d %H:%M") if doc.upload_date else "N/A",
             })
         return {"status": "success", "documents": doc_list}
     except Exception as e:
@@ -131,12 +137,7 @@ def build_document_list(user_id: str, db: Session):
 
 
 @router.post("/documents/update-keywords")
-def update_keywords(
-    doc_id: str = Form(...),
-    keywords: str = Form(...),
-    user_id: str = Depends(security.get_current_user_id),
-    db: Session = Depends(get_db),
-):
+def update_keywords(doc_id: str = Form(...), keywords: str = Form(...), user_id: str = Depends(security.get_current_user_id), db: Session = Depends(get_db)):
     require_owner(db, doc_id, user_id)
     db.query(models.DocumentKeyword).filter(models.DocumentKeyword.document_id == doc_id).delete()
     new_kw_list = [k.strip().lower() for k in keywords.split(',') if k.strip()]
@@ -152,27 +153,20 @@ def update_keywords(
 
 
 @router.post("/documents/update-permission")
-def update_permission(
-    doc_id: str = Form(...),
-    new_perm: str = Form(...),
-    user_id: str = Depends(security.get_current_user_id),
-    db: Session = Depends(get_db),
-):
+def update_permission(doc_id: str = Form(...), new_perm: str = Form(...), user_id: str = Depends(security.get_current_user_id), db: Session = Depends(get_db)):
     require_owner(db, doc_id, user_id)
+    if new_perm not in {"Owner", "Reader", "Aggregate", "Metadata"}:
+        raise HTTPException(status_code=400, detail="Invalid permission/visibility mode.")
     doc = db.query(models.Document).filter(models.Document.id == doc_id).first()
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found.")
-    doc.visibility = "Aggregate" if new_perm == "Aggregate" else "Private"
+    doc.visibility = visibility_from_permission(new_perm)
     db.commit()
-    return {"status": "success", "message": "Permission updated"}
+    return {"status": "success", "message": "Permission updated", "visibility": doc.visibility}
 
 
 @router.delete("/documents/delete")
-def delete_document(
-    doc_id: str = Form(...),
-    user_id: str = Depends(security.get_current_user_id),
-    db: Session = Depends(get_db),
-):
+def delete_document(doc_id: str = Form(...), user_id: str = Depends(security.get_current_user_id), db: Session = Depends(get_db)):
     perm_record = db.query(models.UserDocumentPermission).filter(
         models.UserDocumentPermission.document_id == doc_id,
         models.UserDocumentPermission.user_id == user_id,
@@ -202,12 +196,7 @@ def delete_document(
 
 
 @router.post("/documents/transfer")
-def transfer_document_ownership(
-    doc_id: str = Form(...),
-    new_username: str = Form(...),
-    user_id: str = Depends(security.get_current_user_id),
-    db: Session = Depends(get_db),
-):
+def transfer_document_ownership(doc_id: str = Form(...), new_username: str = Form(...), user_id: str = Depends(security.get_current_user_id), db: Session = Depends(get_db)):
     current_perm = require_owner(db, doc_id, user_id)
     target_user = db.query(models.User).filter(models.User.username == new_username).first()
     if not target_user:
