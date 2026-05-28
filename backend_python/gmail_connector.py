@@ -13,6 +13,7 @@ import json
 import os
 import uuid
 from typing import Any, Dict, List
+from urllib.parse import urlparse
 
 from sqlalchemy.orm import Session
 
@@ -21,6 +22,24 @@ import models
 
 SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
 PROVIDER = "gmail"
+DEFAULT_REDIRECT_URI = "http://127.0.0.1:8000/api/connectors/gmail/callback"
+
+
+def _redirect_uri() -> str:
+    return os.getenv("GOOGLE_REDIRECT_URI", DEFAULT_REDIRECT_URI)
+
+
+def _allow_insecure_transport_for_localhost(redirect_uri: str) -> None:
+    """Allow HTTP OAuth callbacks only for local development.
+
+    oauthlib rejects plain HTTP by default. Google local testing commonly uses
+    localhost/127.0.0.1 redirect URIs, so we opt in only for those hosts. Do not
+    enable this for a deployed public URL.
+    """
+
+    parsed = urlparse(redirect_uri)
+    if parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "localhost"}:
+        os.environ.setdefault("OAUTHLIB_INSECURE_TRANSPORT", "1")
 
 
 def _require_google_libs():
@@ -37,7 +56,7 @@ def _require_google_libs():
 def _client_config() -> Dict[str, Any]:
     client_id = os.getenv("GOOGLE_CLIENT_ID")
     client_secret = os.getenv("GOOGLE_CLIENT_SECRET")
-    redirect_uri = os.getenv("GOOGLE_REDIRECT_URI", "http://127.0.0.1:8000/api/connectors/gmail/callback")
+    redirect_uri = _redirect_uri()
     if not client_id or not client_secret:
         raise RuntimeError("GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must be set for Gmail OAuth.")
     return {
@@ -55,7 +74,8 @@ def create_authorization_url(user_id: str) -> Dict[str, str]:
     _require_google_libs()
     from google_auth_oauthlib.flow import Flow
 
-    redirect_uri = os.getenv("GOOGLE_REDIRECT_URI", "http://127.0.0.1:8000/api/connectors/gmail/callback")
+    redirect_uri = _redirect_uri()
+    _allow_insecure_transport_for_localhost(redirect_uri)
     flow = Flow.from_client_config(_client_config(), scopes=SCOPES, redirect_uri=redirect_uri)
     auth_url, state = flow.authorization_url(
         access_type="offline",
@@ -70,7 +90,8 @@ def store_callback_tokens(db: Session, user_id: str, authorization_response_url:
     _require_google_libs()
     from google_auth_oauthlib.flow import Flow
 
-    redirect_uri = os.getenv("GOOGLE_REDIRECT_URI", "http://127.0.0.1:8000/api/connectors/gmail/callback")
+    redirect_uri = _redirect_uri()
+    _allow_insecure_transport_for_localhost(redirect_uri)
     flow = Flow.from_client_config(_client_config(), scopes=SCOPES, redirect_uri=redirect_uri)
     flow.fetch_token(authorization_response=authorization_response_url)
     credentials = flow.credentials
