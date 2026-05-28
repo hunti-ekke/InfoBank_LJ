@@ -5,12 +5,13 @@ from sqlalchemy.orm import Session
 import models
 import ai_service
 import relevance
+import evidence_service
 from database import get_db
 
 router = APIRouter(prefix="/api", tags=["Chat"])
 
 
-def log_chat_event(db: Session, user_id: str, question: str, answer: str, keywords: list, sources: list, status: str, query_profile: dict = None, governance: dict = None):
+def log_chat_event(db: Session, user_id: str, question: str, answer: str, keywords: list, sources: list, status: str, query_profile: dict = None, governance: dict = None, evidence_check: dict = None):
     details = json.dumps({
         "question": question,
         "answer": answer,
@@ -20,6 +21,7 @@ def log_chat_event(db: Session, user_id: str, question: str, answer: str, keywor
         "relevance_levels": relevance.summarize_relevance_levels(sources) if sources else {},
         "sources_used": [s["file_name"] for s in sources] if sources else [],
         "governance": governance or {},
+        "evidence_check": evidence_check or {},
         "status": status
     })
     
@@ -34,8 +36,6 @@ def log_chat_event(db: Session, user_id: str, question: str, answer: str, keywor
 
 
 def get_permitted_fallback_doc_ids(db: Session, user_id: str) -> list[str]:
-    """Return a conservative fallback corpus for lexical/keyword misses."""
-
     direct_records = db.query(models.UserDocumentPermission.document_id).filter(
         models.UserDocumentPermission.user_id == user_id
     ).all()
@@ -49,6 +49,26 @@ def get_permitted_fallback_doc_ids(db: Session, user_id: str) -> list[str]:
     return list(set(direct_doc_ids + aggregate_doc_ids))
 
 
+def make_generator_safe_chunk(role: str, chunk_text: str, source_profile: dict) -> str:
+    """Prevent aggregate-only content from being sent verbatim to the LLM.
+
+    Aggregate sources are transformed into a small non-quotable summary signal.
+    This is the backend hardening step that complements the UI hiding behavior.
+    """
+
+    if role == relevance.SOURCE_ROLE_AGGREGATE_ONLY:
+        lexical_hits = ", ".join(source_profile.get("lexical_hits", [])) or "none"
+        semantic_hits = ", ".join(source_profile.get("semantic_hits", [])) or "none"
+        return (
+            "[Aggregate-only non-quotable source. Individual text is withheld. "
+            f"Lexical hits: {lexical_hits}. Semantic hits: {semantic_hits}. "
+            "Use only for governed aggregate or cautious contextual statements.]"
+        )
+    if role == relevance.SOURCE_ROLE_GOVERNANCE_EXCLUDED:
+        return "[Governance-excluded source. Content withheld and must not be used.]"
+    return chunk_text
+
+
 @router.post("/ask")
 async def ask_infobank(
     background_tasks: BackgroundTasks,
@@ -58,6 +78,7 @@ async def ask_infobank(
 ):
     query_profile = {}
     governance_context = {}
+    evidence_check = {}
 
     try:
         all_kws = db.query(models.Keyword.word).all()
@@ -105,7 +126,7 @@ async def ask_infobank(
 
         if not candidate_doc_ids:
             msg = "There is no document related to the question in the InfoBank."
-            background_tasks.add_task(log_chat_event, db, user_id, question, msg, question_keywords, [], "rejected", query_profile, {})
+            background_tasks.add_task(log_chat_event, db, user_id, question, msg, question_keywords, [], "rejected", query_profile, {}, {})
             return {"status": "controlled_failure", "message": msg, "query_profile": query_profile}
 
         user_permissions = db.query(models.UserDocumentPermission).filter(
@@ -126,7 +147,7 @@ async def ask_infobank(
 
         if not all_allowed_docs:
             msg = "There is no permitted source that can be used for this question in the InfoBank."
-            background_tasks.add_task(log_chat_event, db, user_id, question, msg, question_keywords, [], "rejected", query_profile, governance_context)
+            background_tasks.add_task(log_chat_event, db, user_id, question, msg, question_keywords, [], "rejected", query_profile, governance_context, {})
             return {
                 "status": "controlled_failure",
                 "message": msg,
@@ -142,7 +163,7 @@ async def ask_infobank(
 
         if not results['documents'] or not results['documents'][0]:
             msg = "The answer cannot be found in the document."
-            background_tasks.add_task(log_chat_event, db, user_id, question, msg, question_keywords, [], "not_found", query_profile, governance_context)
+            background_tasks.add_task(log_chat_event, db, user_id, question, msg, question_keywords, [], "not_found", query_profile, governance_context, {})
             return {
                 "status": "success",
                 "answer": msg,
@@ -168,8 +189,9 @@ async def ask_infobank(
                     use_decision=use_decision,
                 )
                 role = source_profile["role"]
+                safe_chunk_text = make_generator_safe_chunk(role, chunk_text, source_profile)
 
-                context_blocks.append(relevance.make_context_block(source_profile, file_name, chunk_text))
+                context_blocks.append(relevance.make_context_block(source_profile, file_name, safe_chunk_text))
                 sources_list.append({
                     "document_id": doc_id,
                     "file_name": file_name,
@@ -182,15 +204,28 @@ async def ask_infobank(
         context_text = "\n\n---\n\n".join(context_blocks)
         role_summary = relevance.summarize_source_roles(sources_list)
         relevance_level_summary = relevance.summarize_relevance_levels(sources_list)
+        evidence_check = evidence_service.check_rag_evidence(sources_list, query_profile, governance_context)
+
+        if evidence_check["decision"] == "controlled_failure_or_cautious_answer" and not sources_list:
+            msg = "The answer cannot be found in the document."
+            background_tasks.add_task(log_chat_event, db, user_id, question, msg, question_keywords, sources_list, "not_found", query_profile, governance_context, evidence_check)
+            return {
+                "status": "success",
+                "answer": msg,
+                "query_profile": query_profile,
+                "governance": governance_context,
+                "evidence_check": evidence_check,
+            }
 
         system_instruction = (
             "You are a precise InfoBank data analysis expert. Answer ONLY based on the provided context. "
             "CRITICAL RULE: Answer in the exact same language as the question was given in. "
             "Do not translate the answer to another language unless explicitly requested. "
             "Use the full usable-relevance profile: lexical, semantic, ontological, pragmatic, genre, perlocutionary, temporal/status, governance, and evidential. "
-            "Primary sources may support direct claims. Aggregate-only sources may support only governed aggregate or cautious contextual statements. "
+            "Primary sources may support direct claims. Aggregate-only sources are non-quotable and may support only governed aggregate or cautious contextual statements. "
             "Contextual, analogical, and activity-trace-like sources must not create obligations by themselves. "
             "Contrastive sources may close, cancel, or weaken a candidate claim. "
+            "Respect the Evidence Check decision and warnings. "
             "If there is no primary evidence for a precise claim, explicitly say that the answer is based on limited or aggregate/contextual evidence. "
             "If the information is missing or unclear, answer strictly with: 'The answer cannot be found in the document.' "
             "No hallucinations are allowed."
@@ -200,7 +235,7 @@ async def ask_infobank(
             model=ai_service.MODEL_NAME,
             messages=[
                 {"role": "system", "content": system_instruction},
-                {"role": "user", "content": f"Question: {question}\n\nQuery profile:\n{json.dumps(query_profile, ensure_ascii=False)}\n\nGovernance/source-role summary:\n{json.dumps(governance_context, ensure_ascii=False)}\n\nSource role summary:\n{json.dumps(role_summary, ensure_ascii=False)}\n\nRelevance level summary:\n{json.dumps(relevance_level_summary, ensure_ascii=False)}\n\nContext from the document(s):\n{context_text}"}
+                {"role": "user", "content": f"Question: {question}\n\nQuery profile:\n{json.dumps(query_profile, ensure_ascii=False)}\n\nGovernance/source-role summary:\n{json.dumps(governance_context, ensure_ascii=False)}\n\nSource role summary:\n{json.dumps(role_summary, ensure_ascii=False)}\n\nRelevance level summary:\n{json.dumps(relevance_level_summary, ensure_ascii=False)}\n\nEvidence check:\n{json.dumps(evidence_check, ensure_ascii=False)}\n\nContext from the document(s):\n{context_text}"}
             ],
             temperature=0.1
         )
@@ -223,6 +258,7 @@ async def ask_infobank(
             final_status,
             query_profile,
             governance_context,
+            evidence_check,
         )
 
         return {
@@ -233,11 +269,12 @@ async def ask_infobank(
             "governance": governance_context,
             "source_role_summary": role_summary,
             "relevance_level_summary": relevance_level_summary,
+            "evidence_check": evidence_check,
             "searched_documents_count": len(all_allowed_docs),
             "answer": answer,
             "sources": sources_list
         }
     except Exception as e:
         db.rollback()
-        background_tasks.add_task(log_chat_event, db, user_id, question, str(e), [], [], "error", query_profile, governance_context)
+        background_tasks.add_task(log_chat_event, db, user_id, question, str(e), [], [], "error", query_profile, governance_context, evidence_check)
         raise HTTPException(status_code=500, detail=str(e))
