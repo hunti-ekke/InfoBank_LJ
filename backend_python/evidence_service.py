@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 import citds_classifier
 import models
+import policy_engine
 import relevance
 
 
@@ -59,23 +60,11 @@ def import_evidence_units(db: Session, user_id: str, units: Iterable[Dict[str, A
     return created
 
 
-def _source_type_default_use_decision(source_type: str) -> str:
-    """Evidence units are owned user data by default.
-
-    BrowserHistory and ActivityTrace are full-access data, but their evidential
-    source role remains contextual through the classifier. This distinction is
-    important: governance can allow access while evidential logic still prevents
-    a task from being created from activity traces alone.
-    """
-
-    if source_type in {"BrowserHistory", "ActivityTrace"}:
-        return relevance.USE_FULL
-    return relevance.USE_FULL
-
-
-def _citds_role_to_action_role(source_role: str, source_type: str) -> str:
-    if source_role == relevance.SOURCE_ROLE_GOVERNANCE_EXCLUDED:
+def _citds_role_to_action_role(source_role: str, source_type: str, use_decision: str) -> str:
+    if use_decision == relevance.USE_DENY or source_role == relevance.SOURCE_ROLE_GOVERNANCE_EXCLUDED:
         return ACTION_ROLE_EXCLUDED
+    if use_decision == relevance.USE_METADATA:
+        return ACTION_ROLE_CONTEXTUAL
     if source_role == relevance.SOURCE_ROLE_CONTRASTIVE:
         return ACTION_ROLE_CONTRASTIVE
     if source_type in {"BrowserHistory", "ActivityTrace"}:
@@ -87,36 +76,48 @@ def _citds_role_to_action_role(source_role: str, source_type: str) -> str:
     return ACTION_ROLE_CONTEXTUAL
 
 
-def classify_evidence_unit(unit: models.EvidenceUnit) -> Dict[str, Any]:
+def classify_evidence_unit(unit: models.EvidenceUnit, policy_resolution: Dict[str, Any] | None = None) -> Dict[str, Any]:
     text = f"{unit.title}\n{unit.content}"
     source_type = unit.source_type.value if hasattr(unit.source_type, "value") else str(unit.source_type)
-    use_decision = _source_type_default_use_decision(source_type)
+    policy_resolution = policy_resolution or {
+        "use_decision": relevance.USE_FULL,
+        "source_role": relevance.SOURCE_ROLE_PRIMARY,
+        "reason": "owned_evidence_full",
+        "policy_rule_id": None,
+    }
+    use_decision = policy_resolution.get("use_decision", relevance.USE_FULL)
+
+    classifier_text = text if use_decision != relevance.USE_METADATA else unit.title
     classifier_result = citds_classifier.classify_source(
-        text=text,
+        text=classifier_text,
         task_intent="current_action_list",
         use_decision=use_decision,
         use_llm=False,
     )
 
-    action_role = _citds_role_to_action_role(classifier_result.get("source_role"), source_type)
-    lowered = text.lower()
+    action_role = _citds_role_to_action_role(classifier_result.get("source_role"), source_type, use_decision)
     status = "unknown"
-    if action_role == ACTION_ROLE_CONTRASTIVE:
+    if action_role == ACTION_ROLE_EXCLUDED:
+        status = "governance_excluded"
+    elif use_decision == relevance.USE_METADATA:
+        status = "metadata_only"
+    elif action_role == ACTION_ROLE_CONTRASTIVE:
         status = "closed"
     elif action_role == ACTION_ROLE_CONTEXTUAL:
         status = "contextual"
     elif action_role == ACTION_ROLE_PRIMARY:
         status = "open"
 
-    due = extract_due_date(text)
-    action = extract_action_text(text)
-    object_label = extract_object_label(text)
+    due = None if use_decision == relevance.USE_METADATA else extract_due_date(text)
+    action = "[metadata-only: evidence content withheld]" if use_decision == relevance.USE_METADATA else extract_action_text(text)
+    object_label = None if use_decision == relevance.USE_METADATA else extract_object_label(text)
+    content_summary = "[metadata-only: evidence content withheld]" if use_decision == relevance.USE_METADATA else summarize_text(unit.content)
 
     return {
         "id": unit.id,
         "source_type": source_type,
         "title": unit.title,
-        "content_summary": summarize_text(unit.content),
+        "content_summary": content_summary,
         "timestamp": unit.source_timestamp.isoformat() if unit.source_timestamp else None,
         "thread_id": unit.thread_id,
         "relation_key": unit.relation_key or object_label or unit.thread_id or unit.id,
@@ -126,6 +127,7 @@ def classify_evidence_unit(unit: models.EvidenceUnit) -> Dict[str, Any]:
         "due": due,
         "action": action,
         "object": object_label,
+        "policy": policy_resolution,
         "classifier": classifier_result,
         "signals": {
             "primary": classifier_result.get("speech_acts", []),
@@ -148,7 +150,6 @@ def extract_due_date(text: str) -> Optional[str]:
 
 
 def extract_action_text(text: str) -> str:
-    # Prefer explicit action fields in synthetic/imported evidence units.
     match = re.search(r"Action[:\s]+([^\n\.]+)", text, flags=re.IGNORECASE)
     if match:
         return match.group(1).strip()
@@ -182,7 +183,34 @@ def summarize_text(text: str, max_len: int = 220) -> str:
 
 def reconstruct_action_list(db: Session, user_id: str) -> Dict[str, Any]:
     units = db.query(models.EvidenceUnit).filter(models.EvidenceUnit.user_id == user_id).all()
-    classified = [classify_evidence_unit(unit) for unit in units]
+    unit_ids = [unit.id for unit in units]
+    policy_context = policy_engine.resolve_evidence_unit_access_bulk(
+        db=db,
+        user_id=user_id,
+        unit_ids=unit_ids,
+        purpose="action_reconstruction",
+    ) if unit_ids else {
+        "use_decisions": {},
+        "source_roles": {},
+        "policy_reasons": {},
+        "policy_rule_ids": {},
+        "usable_unit_ids": [],
+        "content_unit_ids": [],
+        "metadata_only_unit_ids": [],
+        "denied_unit_ids": [],
+    }
+    classified = [
+        classify_evidence_unit(
+            unit,
+            {
+                "use_decision": policy_context["use_decisions"].get(unit.id, relevance.USE_DENY),
+                "source_role": policy_context["source_roles"].get(unit.id, relevance.SOURCE_ROLE_GOVERNANCE_EXCLUDED),
+                "reason": policy_context["policy_reasons"].get(unit.id),
+                "policy_rule_id": policy_context["policy_rule_ids"].get(unit.id),
+            },
+        )
+        for unit in units
+    ]
 
     grouped: Dict[str, Dict[str, Any]] = {}
     for item in classified:
@@ -194,8 +222,11 @@ def reconstruct_action_list(db: Session, user_id: str) -> Dict[str, Any]:
                 "contextual_support": [],
                 "contrastive_evidence": [],
                 "excluded_evidence": [],
+                "metadata_only_evidence": [],
             }
-        if item["role"] == ACTION_ROLE_PRIMARY:
+        if item["status"] == "metadata_only":
+            grouped[key]["metadata_only_evidence"].append(item)
+        elif item["role"] == ACTION_ROLE_PRIMARY:
             grouped[key]["primary_evidence"].append(item)
         elif item["role"] == ACTION_ROLE_CONTRASTIVE:
             grouped[key]["contrastive_evidence"].append(item)
@@ -208,12 +239,14 @@ def reconstruct_action_list(db: Session, user_id: str) -> Dict[str, Any]:
     closed_items: List[Dict[str, Any]] = []
     contextual_only: List[Dict[str, Any]] = []
     excluded_only: List[Dict[str, Any]] = []
+    metadata_only: List[Dict[str, Any]] = []
 
     for group in grouped.values():
         primary = group["primary_evidence"]
         contextual = group["contextual_support"]
         contrastive = group["contrastive_evidence"]
         excluded = group["excluded_evidence"]
+        metadata = group["metadata_only_evidence"]
         if primary and not contrastive:
             strongest = sorted(primary, key=lambda x: x.get("timestamp") or "")[-1]
             open_items.append({
@@ -223,8 +256,8 @@ def reconstruct_action_list(db: Session, user_id: str) -> Dict[str, Any]:
                 "due": strongest.get("due"),
                 "status": "open",
                 "E": [e["id"] for e in primary + contextual],
-                "R": {"primary": len(primary), "contextual": len(contextual), "contrastive": 0, "excluded": len(excluded)},
-                "evidence": {"primary": primary, "contextual": contextual, "contrastive": [], "excluded": excluded},
+                "R": {"primary": len(primary), "contextual": len(contextual), "contrastive": 0, "excluded": len(excluded), "metadata_only": len(metadata)},
+                "evidence": {"primary": primary, "contextual": contextual, "contrastive": [], "excluded": excluded, "metadata_only": metadata},
             })
         elif primary and contrastive:
             strongest = sorted(primary, key=lambda x: x.get("timestamp") or "")[-1]
@@ -235,8 +268,8 @@ def reconstruct_action_list(db: Session, user_id: str) -> Dict[str, Any]:
                 "due": strongest.get("due"),
                 "status": "closed_or_cancelled",
                 "E": [e["id"] for e in primary + contextual + contrastive],
-                "R": {"primary": len(primary), "contextual": len(contextual), "contrastive": len(contrastive), "excluded": len(excluded)},
-                "evidence": {"primary": primary, "contextual": contextual, "contrastive": contrastive, "excluded": excluded},
+                "R": {"primary": len(primary), "contextual": len(contextual), "contrastive": len(contrastive), "excluded": len(excluded), "metadata_only": len(metadata)},
+                "evidence": {"primary": primary, "contextual": contextual, "contrastive": contrastive, "excluded": excluded, "metadata_only": metadata},
             })
         elif contextual:
             contextual_only.append({
@@ -244,6 +277,13 @@ def reconstruct_action_list(db: Session, user_id: str) -> Dict[str, Any]:
                 "status": "contextual_only_not_action",
                 "reason": "Contextual/activity evidence cannot create an obligation without primary evidence.",
                 "evidence": contextual,
+            })
+        elif metadata:
+            metadata_only.append({
+                "relation_key": group["relation_key"],
+                "status": "metadata_only_not_action",
+                "reason": "Metadata-only evidence cannot create or describe an action obligation without content access.",
+                "evidence": metadata,
             })
         elif excluded:
             excluded_only.append({
@@ -255,14 +295,17 @@ def reconstruct_action_list(db: Session, user_id: str) -> Dict[str, Any]:
 
     return {
         "status": "success",
+        "policy": policy_context,
         "open_items": open_items,
         "closed_items": closed_items,
         "contextual_only": contextual_only,
+        "metadata_only": metadata_only,
         "excluded_only": excluded_only,
         "counts": {
             "open": len(open_items),
             "closed": len(closed_items),
             "contextual_only": len(contextual_only),
+            "metadata_only": len(metadata_only),
             "excluded_only": len(excluded_only),
             "evidence_units": len(classified),
         },
