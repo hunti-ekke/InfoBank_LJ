@@ -6,13 +6,13 @@ import models
 from database import engine, get_db
 
 # IMPORTÁLÁS A ROUTERS MAPPÁBÓL:
-from routers import auth, profile, analytics, documents, chat, admin, evidence, policy, citds_eval, classifier
+from routers import auth, profile, analytics, documents, chat, admin, evidence, policy, citds_eval, classifier, connectors
 
 load_dotenv()
 
 models.Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="InfoBank API", version="3.3.0")
+app = FastAPI(title="InfoBank API", version="3.4.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -33,6 +33,7 @@ app.include_router(evidence.router)
 app.include_router(policy.router)
 app.include_router(citds_eval.router)
 app.include_router(classifier.router)
+app.include_router(connectors.router)
 
 @app.get("/api/test-db")
 def test_db_connection(db: Session = Depends(get_db)):
