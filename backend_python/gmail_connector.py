@@ -9,10 +9,12 @@ reconstruction pipeline as all other evidence.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
+import secrets
 import uuid
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 from urllib.parse import urlparse
 
 from sqlalchemy.orm import Session
@@ -40,6 +42,33 @@ def _allow_insecure_transport_for_localhost(redirect_uri: str) -> None:
     parsed = urlparse(redirect_uri)
     if parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "localhost"}:
         os.environ.setdefault("OAUTHLIB_INSECURE_TRANSPORT", "1")
+
+
+def _encode_state(user_id: str, code_verifier: str) -> str:
+    payload = {"user_id": user_id, "code_verifier": code_verifier}
+    raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii")
+
+
+def decode_state(state: str) -> Tuple[str, str | None]:
+    """Decode OAuth state.
+
+    New state values contain user_id and PKCE code_verifier. For backward
+    compatibility, a plain user_id state is also accepted with no verifier.
+    """
+
+    try:
+        padded = state + "=" * (-len(state) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
+        return payload["user_id"], payload.get("code_verifier")
+    except Exception:
+        return state, None
+
+
+def _new_code_verifier() -> str:
+    # RFC 7636: 43-128 chars from the unreserved URI set. token_urlsafe(64) is
+    # usually 86 chars and accepted by google-auth-oauthlib/oauthlib.
+    return secrets.token_urlsafe(64)
 
 
 def _require_google_libs():
@@ -76,23 +105,38 @@ def create_authorization_url(user_id: str) -> Dict[str, str]:
 
     redirect_uri = _redirect_uri()
     _allow_insecure_transport_for_localhost(redirect_uri)
-    flow = Flow.from_client_config(_client_config(), scopes=SCOPES, redirect_uri=redirect_uri)
-    auth_url, state = flow.authorization_url(
+    code_verifier = _new_code_verifier()
+    state = _encode_state(user_id, code_verifier)
+    flow = Flow.from_client_config(
+        _client_config(),
+        scopes=SCOPES,
+        redirect_uri=redirect_uri,
+        autogenerate_code_verifier=False,
+    )
+    flow.code_verifier = code_verifier
+    auth_url, returned_state = flow.authorization_url(
         access_type="offline",
         include_granted_scopes="true",
         prompt="consent",
-        state=user_id,
+        state=state,
     )
-    return {"authorization_url": auth_url, "state": state}
+    return {"authorization_url": auth_url, "state": returned_state}
 
 
-def store_callback_tokens(db: Session, user_id: str, authorization_response_url: str) -> models.ConnectorAccount:
+def store_callback_tokens(db: Session, user_id: str, authorization_response_url: str, code_verifier: str | None = None) -> models.ConnectorAccount:
     _require_google_libs()
     from google_auth_oauthlib.flow import Flow
 
     redirect_uri = _redirect_uri()
     _allow_insecure_transport_for_localhost(redirect_uri)
-    flow = Flow.from_client_config(_client_config(), scopes=SCOPES, redirect_uri=redirect_uri)
+    flow = Flow.from_client_config(
+        _client_config(),
+        scopes=SCOPES,
+        redirect_uri=redirect_uri,
+        autogenerate_code_verifier=False,
+    )
+    if code_verifier:
+        flow.code_verifier = code_verifier
     flow.fetch_token(authorization_response=authorization_response_url)
     credentials = flow.credentials
 
@@ -149,8 +193,8 @@ def _extract_text_from_payload(payload: Dict[str, Any]) -> str:
     data = body.get("data")
     if data:
         try:
-            import base64
-            return base64.urlsafe_b64decode(data.encode("utf-8")).decode("utf-8", errors="ignore")
+            import base64 as b64
+            return b64.urlsafe_b64decode(data.encode("utf-8")).decode("utf-8", errors="ignore")
         except Exception:
             return ""
     parts = payload.get("parts") or []
