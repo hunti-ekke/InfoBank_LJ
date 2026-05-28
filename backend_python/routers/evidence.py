@@ -178,12 +178,24 @@ def list_evidence_units(user_id: str = Depends(security.get_current_user_id), db
     }
 
 
-def _clear_evidence_by_source_types(db: Session, user_id: str, source_types: List[models.EvidenceSourceType]) -> int:
-    units = db.query(models.EvidenceUnit).filter(
-        models.EvidenceUnit.user_id == user_id,
-        models.EvidenceUnit.source_type.in_(source_types),
-    ).all()
-    unit_ids = [unit.id for unit in units]
+def _source_type_value(unit: models.EvidenceUnit) -> str:
+    value = unit.source_type
+    if hasattr(value, "value"):
+        return value.value
+    return str(value)
+
+
+def _clear_evidence_by_source_type_values(db: Session, user_id: str, source_type_values: List[str]) -> int:
+    """Delete connector EvidenceUnits with enum/string-safe matching.
+
+    MySQL + SQLAlchemy Enum columns can be returned as enum objects while manual
+    rows or older migrations may behave like strings. Filtering in Python keeps
+    this cleanup endpoint reliable for local prototype databases.
+    """
+
+    wanted = set(source_type_values)
+    units = db.query(models.EvidenceUnit).filter(models.EvidenceUnit.user_id == user_id).all()
+    unit_ids = [unit.id for unit in units if _source_type_value(unit) in wanted]
     if not unit_ids:
         return 0
     db.query(models.PolicyRule).filter(
@@ -191,7 +203,10 @@ def _clear_evidence_by_source_types(db: Session, user_id: str, source_types: Lis
         models.PolicyRule.target_type == "EvidenceUnit",
         models.PolicyRule.target_id.in_(unit_ids),
     ).delete(synchronize_session=False)
-    deleted = db.query(models.EvidenceUnit).filter(models.EvidenceUnit.id.in_(unit_ids)).delete(synchronize_session=False)
+    deleted = db.query(models.EvidenceUnit).filter(
+        models.EvidenceUnit.user_id == user_id,
+        models.EvidenceUnit.id.in_(unit_ids),
+    ).delete(synchronize_session=False)
     db.commit()
     return deleted
 
@@ -205,7 +220,7 @@ def clear_email_evidence(user_id: str = Depends(security.get_current_user_id), d
     """
 
     try:
-        deleted = _clear_evidence_by_source_types(db, user_id, [models.EvidenceSourceType.Email])
+        deleted = _clear_evidence_by_source_type_values(db, user_id, ["Email"])
         return {"status": "success", "deleted": deleted, "source_type": "Email"}
     except Exception as e:
         db.rollback()
@@ -217,11 +232,7 @@ def clear_browser_history_evidence(user_id: str = Depends(security.get_current_u
     """Delete imported browser/search-history EvidenceUnits for the current user."""
 
     try:
-        deleted = _clear_evidence_by_source_types(
-            db,
-            user_id,
-            [models.EvidenceSourceType.BrowserHistory, models.EvidenceSourceType.ActivityTrace],
-        )
+        deleted = _clear_evidence_by_source_type_values(db, user_id, ["BrowserHistory", "ActivityTrace"])
         return {"status": "success", "deleted": deleted, "source_type": "BrowserHistory"}
     except Exception as e:
         db.rollback()
