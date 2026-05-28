@@ -2,6 +2,55 @@ const API = "http://127.0.0.1:8000/api";
 let CURRENT_USER_ID = "";
 let ACCESS_TOKEN = "";
 
+function escapeHtml(value) {
+    return String(value ?? "")
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#039;');
+}
+
+function roleBadge(role) {
+    const normalized = role || 'contextual';
+    const classes = {
+        'primary': 'bg-green-50 text-green-700 border-green-200',
+        'aggregate-only': 'bg-amber-50 text-amber-700 border-amber-200',
+        'contextual': 'bg-blue-50 text-blue-700 border-blue-200',
+        'analogical': 'bg-purple-50 text-purple-700 border-purple-200',
+        'contrastive': 'bg-gray-100 text-gray-700 border-gray-300',
+        'governance-excluded': 'bg-red-50 text-red-700 border-red-200'
+    };
+    return `<span class="px-2 py-0.5 rounded-full border text-[10px] font-bold uppercase tracking-wide ${classes[normalized] || classes.contextual}">${escapeHtml(normalized)}</span>`;
+}
+
+function renderRoleSummary(summary) {
+    if (!summary || Object.keys(summary).length === 0) return '';
+    return Object.entries(summary).map(([role, count]) => `${roleBadge(role)}<span class="text-[10px] text-gray-400 ml-1 mr-2">x${count}</span>`).join('');
+}
+
+function renderGovernanceTrace(res) {
+    const profile = res.query_profile || {};
+    const gov = res.governance || {};
+    const roleSummary = renderRoleSummary(res.source_role_summary);
+    const lexicalTerms = (profile.lexical_terms || []).join(', ') || 'N/A';
+    const taskIntent = profile.task_intent || 'general_document_question';
+    const deniedCount = (gov.denied_doc_ids || []).length;
+    return `
+        <div class="mt-4 bg-slate-50 border border-slate-200 rounded-xl p-3 text-[11px] text-slate-600">
+            <div class="font-bold text-slate-700 mb-2 flex items-center gap-2">
+                <i class="fas fa-shield-alt text-blue-500"></i>
+                Usable Relevance Trace
+            </div>
+            <div class="grid gap-1">
+                <div><b>Task intent:</b> ${escapeHtml(taskIntent)}</div>
+                <div><b>Lexical signals:</b> ${escapeHtml(lexicalTerms)}</div>
+                <div><b>Source roles:</b> ${roleSummary || '<span class="text-gray-400">N/A</span>'}</div>
+                <div><b>Denied by governance:</b> ${deniedCount}</div>
+            </div>
+        </div>`;
+}
+
 async function doRegister() {
     const d = { username: document.getElementById('reg-name').value, email: document.getElementById('reg-email').value, password: document.getElementById('reg-pass').value };
     const r = await fetch(`${API}/register`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(d) });
@@ -65,7 +114,7 @@ async function askQuestion() {
     const btn = document.getElementById('btn-send-chat');
     const q = input.value.trim(); if(!q) return;
 
-    box.innerHTML += `<div class="flex justify-end w-full mb-2"><div class="bg-blue-600 text-white p-3 px-5 rounded-2xl rounded-tr-none max-w-[80%] md:max-w-2xl shadow-sm text-sm">${q}</div></div>`;
+    box.innerHTML += `<div class="flex justify-end w-full mb-2"><div class="bg-blue-600 text-white p-3 px-5 rounded-2xl rounded-tr-none max-w-[80%] md:max-w-2xl shadow-sm text-sm">${escapeHtml(q)}</div></div>`;
     input.value = ""; input.disabled = true; btn.disabled = true;
     box.scrollTop = box.scrollHeight; showTyping();
 
@@ -75,17 +124,20 @@ async function askQuestion() {
         const res = await r.json(); removeTyping();
         if (r.ok) {
             if (res.status === "success") {
-                const formattedText = res.answer.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+                const formattedText = escapeHtml(res.answer).replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+                const governanceTraceHTML = renderGovernanceTrace(res);
 
                 let sourcesHTML = "";
                 if (res.sources && res.sources.length > 0) {
                     let srcBlocks = res.sources.map(src => `
                         <div class="bg-gray-50 p-3 rounded-lg text-xs text-gray-600 border border-gray-200 shadow-sm">
-                            <div class="font-bold text-gray-700 mb-1 flex items-center gap-1">
-                                <i class="far fa-file-pdf text-red-500"></i> ${src.file_name}
+                            <div class="font-bold text-gray-700 mb-1 flex items-center gap-2 flex-wrap">
+                                <i class="far fa-file-pdf text-red-500"></i> ${escapeHtml(src.file_name)}
+                                ${roleBadge(src.role)}
+                                <span class="px-2 py-0.5 rounded-full bg-white border text-[10px] text-gray-500 uppercase">${escapeHtml(src.use_decision || 'unknown')}</span>
                             </div>
-                            <div class="italic leading-relaxed max-h-24 overflow-y-auto pr-1 text-[11px]">
-                                "${src.text}"
+                            <div class="italic leading-relaxed max-h-24 overflow-y-auto pr-1 text-[11px] whitespace-pre-wrap">
+                                ${escapeHtml(src.text)}
                             </div>
                         </div>
                     `).join('');
@@ -95,7 +147,7 @@ async function askQuestion() {
                             <details class="group">
                                 <summary class="text-xs text-blue-500 font-bold cursor-pointer list-none flex items-center gap-1 hover:text-blue-700 transition">
                                     <i class="fas fa-chevron-down transition-transform duration-300 group-open:rotate-180"></i>
-                                    View Retrieved Sources
+                                    View Retrieved Sources & Roles
                                 </summary>
                                 <div class="mt-3 space-y-2">${srcBlocks}</div>
                             </details>
@@ -106,15 +158,17 @@ async function askQuestion() {
                         <div class="bg-white border border-gray-200 p-5 rounded-2xl rounded-tl-none max-w-[80%] md:max-w-2xl text-gray-800 shadow-sm text-sm leading-relaxed">
                             <div class="flex items-center space-x-2 mb-3 pb-3 border-b border-gray-100 text-[10px] text-gray-500 uppercase tracking-widest font-bold">
                                 <i class="fas fa-filter text-blue-500"></i>
-                                <span>Semantic Routing: ${res.extracted_keywords?.join(', ') || 'N/A'}</span>
+                                <span>Semantic Routing: ${escapeHtml(res.extracted_keywords?.join(', ') || 'N/A')}</span>
                             </div>
                             <p style="white-space: pre-wrap;">${formattedText}</p>
+                            ${governanceTraceHTML}
                             ${sourcesHTML} </div>
                     </div>`;
             } else if (res.status === "controlled_failure") {
-                box.innerHTML += `<div class="flex justify-start w-full mb-2"><div class="bg-red-50 border-l-4 border-red-500 p-4 rounded-r-2xl max-w-[80%] md:max-w-xl text-red-800 shadow-sm text-sm"><h3 class="font-bold mb-1"><i class="fas fa-shield-alt mr-2"></i>Governance Control</h3><p>${res.message}</p></div></div>`;
+                const trace = renderGovernanceTrace(res);
+                box.innerHTML += `<div class="flex justify-start w-full mb-2"><div class="bg-red-50 border-l-4 border-red-500 p-4 rounded-r-2xl max-w-[80%] md:max-w-xl text-red-800 shadow-sm text-sm"><h3 class="font-bold mb-1"><i class="fas fa-shield-alt mr-2"></i>Governance Control</h3><p>${escapeHtml(res.message)}</p>${trace}</div></div>`;
             }
-        } else box.innerHTML += `<div class="flex justify-start w-full mb-2"><div class="bg-red-50 text-red-800 p-3 rounded-2xl max-w-xl text-sm">Error: ${res.detail || "Unknown"}</div></div>`;
+        } else box.innerHTML += `<div class="flex justify-start w-full mb-2"><div class="bg-red-50 text-red-800 p-3 rounded-2xl max-w-xl text-sm">Error: ${escapeHtml(res.detail || "Unknown")}</div></div>`;
     } catch(e) { removeTyping(); box.innerHTML += `<div class="flex justify-start w-full mb-2"><div class="bg-red-50 text-red-800 p-3 rounded-2xl max-w-xl text-sm">Connection Error.</div></div>`; }
     finally { input.disabled = false; btn.disabled = false; input.focus(); box.scrollTop = box.scrollHeight; }
 }
@@ -145,8 +199,8 @@ async function loadDocs() {
 
         tbody.innerHTML += `
             <tr class="hover:bg-gray-50 transition">
-                <td class="px-6 py-4 font-medium text-gray-800 whitespace-nowrap"><i class="far fa-file-pdf text-red-500 mr-2"></i>${doc.file_name}</td>
-                <td class="px-6 py-4"><div class="flex items-center space-x-2"><input type="text" id="kw-${doc.document_id}" value="${doc.keywords.join(', ')}" class="flex-1 border border-gray-300 rounded-md px-3 py-1.5 text-xs outline-none focus:ring-2 focus:ring-blue-400"><button onclick="saveKW('${doc.document_id}')" class="text-white bg-blue-500 hover:bg-blue-600 rounded-md p-1.5 transition"><i class="fas fa-save"></i></button></div></td>
+                <td class="px-6 py-4 font-medium text-gray-800 whitespace-nowrap"><i class="far fa-file-pdf text-red-500 mr-2"></i>${escapeHtml(doc.file_name)}</td>
+                <td class="px-6 py-4"><div class="flex items-center space-x-2"><input type="text" id="kw-${doc.document_id}" value="${escapeHtml(doc.keywords.join(', '))}" class="flex-1 border border-gray-300 rounded-md px-3 py-1.5 text-xs outline-none focus:ring-2 focus:ring-blue-400"><button onclick="saveKW('${doc.document_id}')" class="text-white bg-blue-500 hover:bg-blue-600 rounded-md p-1.5 transition"><i class="fas fa-save"></i></button></div></td>
                 <td class="px-6 py-4"><select onchange="savePerm('${doc.document_id}',this.value)" ${!isOwner?'disabled':''} class="text-xs border border-gray-300 rounded-md p-2 outline-none ${!isOwner?'opacity-50 cursor-not-allowed bg-gray-100':'bg-white focus:ring-2 focus:ring-blue-400'}"><option value="Owner" ${doc.permission==='Owner'?'selected':''}>Owner</option><option value="Reader" ${doc.permission==='Reader'?'selected':''}>Reader</option><option value="Aggregate" ${doc.permission==='Aggregate'?'selected':''}>Aggregate</option></select></td>
                 <td class="px-6 py-4 text-center">
                     <button onclick="deleteDoc('${doc.document_id}', '${isOwner}')" class="text-gray-400 hover:text-red-600 transition" title="${iconTitle}"><i class="fas ${iconClass}"></i></button>
@@ -198,6 +252,6 @@ async function loadMap() {
     if (data.map.length === 0) return box.innerHTML = '<div class="text-gray-500">Empty map.</div>';
     data.map.forEach(k => {
         let s = k.count > 3 ? "text-xl font-bold py-3 px-6 shadow-md" : (k.count > 1 ? "text-base font-semibold py-2 px-5" : "text-sm py-2 px-4");
-        box.innerHTML += `<span class="${s} bg-white border border-blue-200 text-blue-700 rounded-full hover:scale-110 transition cursor-default shadow-sm m-1">${k.keyword} <span class="bg-blue-100 text-blue-800 text-xs px-2 py-0.5 rounded-full ml-1">${k.count}</span></span>`;
+        box.innerHTML += `<span class="${s} bg-white border border-blue-200 text-blue-700 rounded-full hover:scale-110 transition cursor-default shadow-sm m-1">${escapeHtml(k.keyword)} <span class="bg-blue-100 text-blue-800 text-xs px-2 py-0.5 rounded-full ml-1">${k.count}</span></span>`;
     });
 }
