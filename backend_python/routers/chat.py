@@ -110,6 +110,56 @@ def is_browser_history_action_rule_question(question: str) -> bool:
     return has_activity_source and has_action_target and asks_rule
 
 
+def query_retrieved_sources(db: Session, question: str, question_vector: list[float], query_profile: dict, governance_context: dict, doc_ids: list[str], n_results: int = 4) -> tuple[list[dict], list[str]]:
+    """Query Chroma for a specific governance tier and build safe source/context blocks.
+
+    CITDS retrieval should not let aggregate/public sources crowd out a user's own
+    full-access primary evidence. The caller chooses the tier order; this helper
+    only retrieves within that tier.
+    """
+
+    if not doc_ids:
+        return [], []
+    where_clause = {"document_id": doc_ids[0]} if len(doc_ids) == 1 else {"document_id": {"$in": doc_ids}}
+    results = ai_service.collection.query(query_embeddings=[question_vector], n_results=n_results, where=where_clause)
+    sources: list[dict] = []
+    blocks: list[str] = []
+    if not results.get('documents') or not results['documents'][0]:
+        return sources, blocks
+
+    seen = set()
+    for chunk_text, meta in zip(results['documents'][0], results['metadatas'][0]):
+        doc_id = meta.get("document_id")
+        dedupe_key = (doc_id, chunk_text[:160])
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        doc_record = db.query(models.Document).filter(models.Document.id == doc_id).first()
+        file_name = doc_record.file_path if doc_record else "Unknown document"
+        base_role = governance_context["source_roles"].get(doc_id, relevance.SOURCE_ROLE_CONTEXTUAL)
+        use_decision = governance_context["use_decisions"].get(doc_id, relevance.USE_DENY)
+        source_profile = relevance.classify_chunk_profile(
+            question=question,
+            chunk_text=chunk_text,
+            file_name=file_name,
+            query_profile=query_profile,
+            base_role=base_role,
+            use_decision=use_decision,
+        )
+        role = source_profile["role"]
+        safe_chunk_text = make_generator_safe_chunk(role, chunk_text, source_profile)
+        blocks.append(relevance.make_context_block(source_profile, file_name, safe_chunk_text))
+        sources.append({
+            "document_id": doc_id,
+            "file_name": file_name,
+            "role": role,
+            "use_decision": use_decision,
+            "usable_relevance": source_profile,
+            "text": relevance.public_source_text(role, chunk_text),
+        })
+    return sources, blocks
+
+
 @router.post("/ask")
 async def ask_infobank(
     background_tasks: BackgroundTasks,
@@ -177,35 +227,39 @@ async def ask_infobank(
         if content_doc_ids:
             response = ai_service.openai_client.embeddings.create(input=question, model=ai_service.EMBEDDING_MODEL)
             question_vector = response.data[0].embedding
-            where_clause = {"document_id": content_doc_ids[0]} if len(content_doc_ids) == 1 else {"document_id": {"$in": content_doc_ids}}
-            results = ai_service.collection.query(query_embeddings=[question_vector], n_results=4, where=where_clause)
 
-            if results['documents'] and results['documents'][0]:
-                for chunk_text, meta in zip(results['documents'][0], results['metadatas'][0]):
-                    doc_id = meta.get("document_id")
-                    doc_record = db.query(models.Document).filter(models.Document.id == doc_id).first()
-                    file_name = doc_record.file_path if doc_record else "Unknown document"
-                    base_role = governance_context["source_roles"].get(doc_id, relevance.SOURCE_ROLE_CONTEXTUAL)
-                    use_decision = governance_context["use_decisions"].get(doc_id, relevance.USE_DENY)
-                    source_profile = relevance.classify_chunk_profile(
-                        question=question,
-                        chunk_text=chunk_text,
-                        file_name=file_name,
-                        query_profile=query_profile,
-                        base_role=base_role,
-                        use_decision=use_decision,
-                    )
-                    role = source_profile["role"]
-                    safe_chunk_text = make_generator_safe_chunk(role, chunk_text, source_profile)
-                    context_blocks.append(relevance.make_context_block(source_profile, file_name, safe_chunk_text))
-                    sources_list.append({
-                        "document_id": doc_id,
-                        "file_name": file_name,
-                        "role": role,
-                        "use_decision": use_decision,
-                        "usable_relevance": source_profile,
-                        "text": relevance.public_source_text(role, chunk_text),
-                    })
+            primary_doc_ids = [
+                doc_id for doc_id in content_doc_ids
+                if governance_context["use_decisions"].get(doc_id) == relevance.USE_FULL
+                and governance_context["source_roles"].get(doc_id) == relevance.SOURCE_ROLE_PRIMARY
+            ]
+            aggregate_doc_ids = [doc_id for doc_id in content_doc_ids if governance_context["use_decisions"].get(doc_id) == relevance.USE_AGGREGATE]
+            other_content_doc_ids = [doc_id for doc_id in content_doc_ids if doc_id not in set(primary_doc_ids + aggregate_doc_ids)]
+
+            # Tiered retrieval: own/full primary evidence first. Aggregate evidence is
+            # only queried when no primary content is available/retrieved. This prevents
+            # public aggregate chunks from crowding out an owner's private source.
+            retrieval_tiers = [
+                ("primary_full", primary_doc_ids),
+                ("other_full", other_content_doc_ids),
+                ("aggregate_only", aggregate_doc_ids),
+            ]
+            for tier_name, tier_doc_ids in retrieval_tiers:
+                tier_sources, tier_blocks = query_retrieved_sources(
+                    db=db,
+                    question=question,
+                    question_vector=question_vector,
+                    query_profile=query_profile,
+                    governance_context=governance_context,
+                    doc_ids=tier_doc_ids,
+                    n_results=4,
+                )
+                if tier_sources:
+                    sources_list.extend(tier_sources)
+                    context_blocks.extend(tier_blocks)
+                    query_profile["retrieval_tier_used"] = tier_name
+                    if tier_name != "aggregate_only":
+                        break
 
         role_summary = relevance.summarize_source_roles(sources_list)
         relevance_level_summary = relevance.summarize_relevance_levels(sources_list)
