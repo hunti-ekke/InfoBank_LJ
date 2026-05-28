@@ -32,6 +32,29 @@ def log_chat_event(db: Session, user_id: str, question: str, answer: str, keywor
     db.commit()
 
 
+def get_permitted_fallback_doc_ids(db: Session, user_id: str) -> list[str]:
+    """Return a conservative fallback corpus for lexical/keyword misses.
+
+    The CITDS model keeps lexical/semantic routing, but a strict keyword gate can
+    drop valid questions when upload-time keywords missed identifiers such as a
+    codename. This fallback searches only documents the user may use directly and
+    documents exposed as Aggregate. It never adds private documents owned by
+    other users.
+    """
+
+    direct_records = db.query(models.UserDocumentPermission.document_id).filter(
+        models.UserDocumentPermission.user_id == user_id
+    ).all()
+    direct_doc_ids = [r[0] for r in direct_records]
+
+    aggregate_records = db.query(models.Document.id).filter(
+        models.Document.visibility == "Aggregate"
+    ).all()
+    aggregate_doc_ids = [r[0] for r in aggregate_records]
+
+    return list(set(direct_doc_ids + aggregate_doc_ids))
+
+
 @router.post("/ask")
 async def ask_infobank(
     background_tasks: BackgroundTasks,
@@ -65,25 +88,26 @@ async def ask_infobank(
         )
         
         raw_result = kw_response.choices[0].message.content.strip()
-        
-        if raw_result == "NONE":
-            msg = "There is no document related to the question in the InfoBank."
-            query_profile = relevance.build_query_profile(question, [])
-            background_tasks.add_task(log_chat_event, db, user_id, question, msg, [], [], "rejected", query_profile, {})
-            return {"status": "controlled_failure", "message": msg, "query_profile": query_profile}
-
-        question_keywords = [k.strip() for k in raw_result.split(',') if k.strip()]
+        fallback_used = False
+        question_keywords = [] if raw_result == "NONE" else [k.strip() for k in raw_result.split(',') if k.strip()]
         query_profile = relevance.build_query_profile(question, question_keywords)
-        matched_keywords = db.query(models.Keyword).filter(models.Keyword.word.in_(question_keywords)).all()
 
-        if not matched_keywords:
-            msg = "There is no document related to the question in the InfoBank."
-            background_tasks.add_task(log_chat_event, db, user_id, question, msg, question_keywords, [], "rejected", query_profile, {})
-            return {"status": "controlled_failure", "message": msg, "query_profile": query_profile}
+        candidate_doc_ids = []
+        if question_keywords:
+            matched_keywords = db.query(models.Keyword).filter(models.Keyword.word.in_(question_keywords)).all()
+            if matched_keywords:
+                kw_ids = [kw.id for kw in matched_keywords]
+                matched_doc_records = db.query(models.DocumentKeyword.document_id).filter(
+                    models.DocumentKeyword.keyword_id.in_(kw_ids)
+                ).distinct().all()
+                candidate_doc_ids = [record[0] for record in matched_doc_records]
 
-        kw_ids = [kw.id for kw in matched_keywords]
-        matched_doc_records = db.query(models.DocumentKeyword.document_id).filter(models.DocumentKeyword.keyword_id.in_(kw_ids)).distinct().all()
-        candidate_doc_ids = [record[0] for record in matched_doc_records]
+        if not candidate_doc_ids:
+            fallback_used = True
+            candidate_doc_ids = get_permitted_fallback_doc_ids(db, user_id)
+            query_profile["retrieval_strategy"] = "permitted_corpus_fallback"
+        else:
+            query_profile["retrieval_strategy"] = "keyword_routed"
 
         if not candidate_doc_ids:
             msg = "There is no document related to the question in the InfoBank."
@@ -103,6 +127,7 @@ async def ask_infobank(
         aggregate_docs = [r[0] for r in aggregate_docs_records]
 
         governance_context = relevance.build_governance_context(candidate_doc_ids, direct_access_docs, aggregate_docs)
+        governance_context["fallback_used"] = fallback_used
         all_allowed_docs = governance_context["usable_doc_ids"]
 
         if not all_allowed_docs:
