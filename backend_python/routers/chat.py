@@ -52,7 +52,7 @@ def extract_aggregate_safe_facts(chunk_text: str, max_facts: int = 3) -> list[st
     for sentence in sentences:
         lowered = sentence.lower()
         has_marker = any(marker in lowered for marker in aggregate_markers)
-        has_number = bool(re.search(r"\b\d+(?:\.\d+)?\b", sentence))
+        has_number = bool(re.search(r"\b\d+(?:\.\d)?\b", sentence))
         if not (has_marker and has_number):
             continue
         safe = re.sub(r"[\w\.-]+@[\w\.-]+", "[redacted-email]", sentence)
@@ -65,15 +65,14 @@ def extract_aggregate_safe_facts(chunk_text: str, max_facts: int = 3) -> list[st
 
 def make_generator_safe_chunk(role: str, chunk_text: str, source_profile: dict) -> str:
     if role == relevance.SOURCE_ROLE_AGGREGATE_ONLY:
-        lexical_hits = ", ".join(source_profile.get("lexical_hits", [])) or "none"
         semantic_hits = ", ".join(source_profile.get("semantic_hits", [])) or "none"
         facts = extract_aggregate_safe_facts(chunk_text)
         fact_text = " | ".join(facts) if facts else "No aggregate-safe numeric/statistical fact extracted from this chunk."
         return (
             "[Aggregate-only non-quotable source. Individual text is withheld. "
-            f"Lexical hits: {lexical_hits}. Semantic hits: {semantic_hits}. "
+            f"Semantic hits: {semantic_hits}. "
             f"Aggregate-safe facts: {fact_text}. "
-            "Use only for governed aggregate or cautious contextual statements; do not quote as an individual document.]"
+            "Use only for governed aggregate/statistical statements. Do not infer or reveal document-specific identifiers, names, codenames, project labels, or other individual content.]"
         )
     if role == relevance.SOURCE_ROLE_GOVERNANCE_EXCLUDED:
         return "[Governance-excluded source. Content withheld and must not be used.]"
@@ -110,13 +109,17 @@ def is_browser_history_action_rule_question(question: str) -> bool:
     return has_activity_source and has_action_target and asks_rule
 
 
-def query_retrieved_sources(db: Session, question: str, question_vector: list[float], query_profile: dict, governance_context: dict, doc_ids: list[str], n_results: int = 4) -> tuple[list[dict], list[str]]:
-    """Query Chroma for a specific governance tier and build safe source/context blocks.
+def is_aggregate_statistics_question(question: str) -> bool:
+    q = question.lower()
+    markers = [
+        "average", "mean", "median", "count", "total", "statistics", "statistic",
+        "aggregate", "pilot statistics", "approval time", "percentage", "percent", "rate",
+    ]
+    return any(marker in q for marker in markers)
 
-    CITDS retrieval should not let aggregate/public sources crowd out a user's own
-    full-access primary evidence. The caller chooses the tier order; this helper
-    only retrieves within that tier.
-    """
+
+def query_retrieved_sources(db: Session, question: str, question_vector: list[float], query_profile: dict, governance_context: dict, doc_ids: list[str], n_results: int = 4) -> tuple[list[dict], list[str]]:
+    """Query Chroma for a specific governance tier and build safe source/context blocks."""
 
     if not doc_ids:
         return [], []
@@ -158,6 +161,22 @@ def query_retrieved_sources(db: Session, question: str, question_vector: list[fl
             "text": relevance.public_source_text(role, chunk_text),
         })
     return sources, blocks
+
+
+def chat_success_payload(question, question_keywords, query_profile, governance_context, role_summary, relevance_level_summary, evidence_check, answer, sources_list):
+    return {
+        "status": "success",
+        "question": question,
+        "extracted_keywords": question_keywords,
+        "query_profile": query_profile,
+        "governance": governance_context,
+        "source_role_summary": role_summary,
+        "relevance_level_summary": relevance_level_summary,
+        "evidence_check": evidence_check,
+        "searched_documents_count": len(governance_context.get("usable_doc_ids", [])),
+        "answer": answer,
+        "sources": sources_list,
+    }
 
 
 @router.post("/ask")
@@ -236,9 +255,6 @@ async def ask_infobank(
             aggregate_doc_ids = [doc_id for doc_id in content_doc_ids if governance_context["use_decisions"].get(doc_id) == relevance.USE_AGGREGATE]
             other_content_doc_ids = [doc_id for doc_id in content_doc_ids if doc_id not in set(primary_doc_ids + aggregate_doc_ids)]
 
-            # Tiered retrieval: own/full primary evidence first. Aggregate evidence is
-            # only queried when no primary content is available/retrieved. This prevents
-            # public aggregate chunks from crowding out an owner's private source.
             retrieval_tiers = [
                 ("primary_full", primary_doc_ids),
                 ("other_full", other_content_doc_ids),
@@ -268,24 +284,21 @@ async def ask_infobank(
         if not content_doc_ids and metadata_doc_ids:
             msg = "Only metadata-level sources are available for this question; document content is withheld by policy, so the answer cannot be found in the document content."
             background_tasks.add_task(log_chat_event, db, user_id, question, msg, question_keywords, sources_list, "metadata_only", query_profile, governance_context, evidence_check)
-            return {
-                "status": "success",
-                "question": question,
-                "extracted_keywords": question_keywords,
-                "query_profile": query_profile,
-                "governance": governance_context,
-                "source_role_summary": role_summary,
-                "relevance_level_summary": relevance_level_summary,
-                "evidence_check": evidence_check,
-                "searched_documents_count": len(governance_context["usable_doc_ids"]),
-                "answer": msg,
-                "sources": sources_list,
-            }
+            return chat_success_payload(question, question_keywords, query_profile, governance_context, role_summary, relevance_level_summary, evidence_check, msg, sources_list)
 
         if not content_doc_ids:
             msg = "There is no permitted source that can be used for this question in the InfoBank."
             background_tasks.add_task(log_chat_event, db, user_id, question, msg, question_keywords, sources_list, "rejected", query_profile, governance_context, evidence_check)
             return {"status": "controlled_failure", "message": msg, "query_profile": query_profile, "governance": governance_context, "evidence_check": evidence_check}
+
+        has_primary = role_summary.get(relevance.SOURCE_ROLE_PRIMARY, 0) > 0
+        has_aggregate = role_summary.get(relevance.SOURCE_ROLE_AGGREGATE_ONLY, 0) > 0
+        if not has_primary and has_aggregate and not is_aggregate_statistics_question(question):
+            msg = "The answer cannot be found in the document."
+            evidence_check.setdefault("warnings", []).append("aggregate_only_not_sufficient_for_specific_content_claim")
+            evidence_check["decision"] = "controlled_failure"
+            background_tasks.add_task(log_chat_event, db, user_id, question, msg, question_keywords, sources_list, "not_found", query_profile, governance_context, evidence_check)
+            return chat_success_payload(question, question_keywords, query_profile, governance_context, role_summary, relevance_level_summary, evidence_check, msg, sources_list)
 
         if not context_blocks:
             msg = "The answer cannot be found in the document."
@@ -296,7 +309,8 @@ async def ask_infobank(
         system_instruction = (
             "You are a precise InfoBank data analysis expert. Answer ONLY based on the provided context. "
             "Answer in the same language as the question. Use the full usable-relevance profile. "
-            "Primary sources may support direct claims. Aggregate-only sources are non-quotable and may support only governed aggregate statements. "
+            "Primary sources may support direct claims. Aggregate-only sources are non-quotable and may support only governed aggregate/statistical statements. "
+            "Aggregate-only sources must never reveal document-specific identifiers, codenames, project labels, names, or other individual content. "
             "Metadata-only sources must never support content claims. Contextual/activity sources must not create obligations by themselves. "
             "Contrastive sources may close, cancel, or weaken a candidate claim. Respect the Evidence Check warnings. "
             "If information is missing or unclear, answer strictly with: 'The answer cannot be found in the document.' No hallucinations."
@@ -317,19 +331,7 @@ async def ask_infobank(
 
         final_status = "not_found" if "The answer cannot be found in the document." in answer else "success"
         background_tasks.add_task(log_chat_event, db, user_id, question, answer, question_keywords, sources_list, final_status, query_profile, governance_context, evidence_check)
-        return {
-            "status": "success",
-            "question": question,
-            "extracted_keywords": question_keywords,
-            "query_profile": query_profile,
-            "governance": governance_context,
-            "source_role_summary": role_summary,
-            "relevance_level_summary": relevance_level_summary,
-            "evidence_check": evidence_check,
-            "searched_documents_count": len(governance_context["usable_doc_ids"]),
-            "answer": answer,
-            "sources": sources_list,
-        }
+        return chat_success_payload(question, question_keywords, query_profile, governance_context, role_summary, relevance_level_summary, evidence_check, answer, sources_list)
     except Exception as e:
         db.rollback()
         background_tasks.add_task(log_chat_event, db, user_id, question, str(e), [], [], "error", query_profile, governance_context, evidence_check)
