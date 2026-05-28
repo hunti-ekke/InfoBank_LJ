@@ -7,6 +7,7 @@ import models
 import ai_service
 import relevance
 import evidence_service
+import security
 from database import get_db
 
 router = APIRouter(prefix="/api", tags=["Chat"])
@@ -51,13 +52,7 @@ def get_permitted_fallback_doc_ids(db: Session, user_id: str) -> list[str]:
 
 
 def extract_aggregate_safe_facts(chunk_text: str, max_facts: int = 3) -> list[str]:
-    """Extract non-quotable aggregate facts from an aggregate-only chunk.
-
-    Aggregate-only documents must not be passed to the generator as raw individual
-    content. However, aggregate statistics such as averages, counts, medians, and
-    percentages are allowed to support aggregate answers. This function keeps only
-    short numeric/statistical statements and redacts obvious direct identifiers.
-    """
+    """Extract non-quotable aggregate facts from an aggregate-only chunk."""
 
     aggregate_markers = [
         "average", "mean", "median", "count", "total", "statistics", "statistic",
@@ -85,12 +80,7 @@ def extract_aggregate_safe_facts(chunk_text: str, max_facts: int = 3) -> list[st
 
 
 def make_generator_safe_chunk(role: str, chunk_text: str, source_profile: dict) -> str:
-    """Prevent aggregate-only content from being sent verbatim to the LLM.
-
-    Aggregate sources are transformed into a small non-quotable aggregate fact
-    summary. This protects individual content while still allowing aggregate
-    answers such as averages, totals, and counts.
-    """
+    """Prevent aggregate-only content from being sent verbatim to the LLM."""
 
     if role == relevance.SOURCE_ROLE_AGGREGATE_ONLY:
         lexical_hits = ", ".join(source_profile.get("lexical_hits", [])) or "none"
@@ -119,9 +109,9 @@ def is_browser_history_action_rule_question(question: str) -> bool:
 @router.post("/ask")
 async def ask_infobank(
     background_tasks: BackgroundTasks,
-    question: str = Form(...), 
-    user_id: str = Form(...), 
-    db: Session = Depends(get_db)
+    question: str = Form(...),
+    user_id: str = Depends(security.get_current_user_id),
+    db: Session = Depends(get_db),
 ):
     query_profile = {}
     governance_context = {}
