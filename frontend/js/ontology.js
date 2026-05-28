@@ -3,7 +3,7 @@ async function loadOntology() {
     container.innerHTML = '<div class="absolute inset-0 flex items-center justify-center"><i class="fas fa-circle-notch fa-spin text-3xl text-blue-500"></i></div>';
     
     try {
-        const r = await fetch(`${API}/ontology/${CURRENT_USER_ID}`);
+        const r = await fetch(`${API}/ontology/me`, { headers: authHeaders() });
         const data = await r.json();
         container.innerHTML = ""; 
 
