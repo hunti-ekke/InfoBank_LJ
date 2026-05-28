@@ -50,6 +50,9 @@
                     <button onclick="switchView('manager')" id="btn-manager" class="nav-btn w-full flex items-center space-x-3 px-4 py-3 text-gray-600 hover:bg-gray-100 rounded-xl font-medium transition">
                         <i class="fas fa-tasks w-5 text-center"></i><span>Management</span>
                     </button>
+                    <button onclick="switchView('connectors')" id="btn-connectors" class="nav-btn w-full flex items-center space-x-3 px-4 py-3 text-gray-600 hover:bg-gray-100 rounded-xl font-medium transition">
+                        <i class="fas fa-plug w-5 text-center"></i><span>Connectors</span>
+                    </button>
                 </nav>
             </div>
             
@@ -110,6 +113,50 @@
                         <option value="Metadata">Metadata Only</option>
                     </select>
                     <button onclick="uploadDocument()" id="btn-upload" class="bg-blue-600 text-white px-6 py-2 rounded-lg font-bold hover:bg-blue-700 transition ml-2">Upload & Ingest</button>
+                </div>
+            </div>
+
+            <div id="view-connectors" class="view-section hidden flex-1 p-6 overflow-y-auto bg-gray-50">
+                <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
+                    <div class="bg-white border rounded-2xl shadow-sm p-6 space-y-4">
+                        <div>
+                            <h2 class="text-lg font-bold text-gray-800 flex items-center gap-2"><i class="fab fa-google text-red-500"></i> Gmail / Email connector</h2>
+                            <p class="text-sm text-gray-500 mt-1">Teszteld az email evidence importot. OAuth-hoz Google Cloud credential kell, de a demo import azonnal működik.</p>
+                        </div>
+                        <div id="gmail-status" class="text-xs bg-gray-50 border rounded-lg p-3 text-gray-600">Status not loaded.</div>
+                        <div class="flex flex-wrap gap-2">
+                            <button onclick="loadConnectorStatus()" class="bg-gray-700 text-white px-4 py-2 rounded-lg text-sm font-bold hover:bg-gray-800"><i class="fas fa-sync mr-1"></i>Status</button>
+                            <button onclick="connectGmail()" class="bg-red-600 text-white px-4 py-2 rounded-lg text-sm font-bold hover:bg-red-700"><i class="fab fa-google mr-1"></i>Connect Gmail OAuth</button>
+                            <button onclick="syncGmail()" class="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-bold hover:bg-blue-700"><i class="fas fa-envelope mr-1"></i>Sync Gmail</button>
+                            <button onclick="importDemoGmail()" class="bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-bold hover:bg-green-700"><i class="fas fa-vial mr-1"></i>Import demo email</button>
+                        </div>
+                        <div class="text-xs text-gray-400 leading-relaxed">
+                            Demo email után kérdezd meg az Assistantben: <b>What is my current action list?</b>
+                        </div>
+                    </div>
+
+                    <div class="bg-white border rounded-2xl shadow-sm p-6 space-y-4">
+                        <div>
+                            <h2 class="text-lg font-bold text-gray-800 flex items-center gap-2"><i class="fas fa-search text-blue-500"></i> Google search / browser history</h2>
+                            <p class="text-sm text-gray-500 mt-1">A Google kereséses nyomokat BrowserHistory evidence unitként importáljuk. Ezek contextual-only: önmagukban nem csinálhatnak taskot.</p>
+                        </div>
+                        <div class="bg-blue-50 border border-blue-100 rounded-lg p-3 text-xs text-blue-800">
+                            JSON/CSV exportot tölthetsz fel, vagy használd a demo Google search importot.
+                        </div>
+                        <div class="flex flex-wrap items-center gap-2">
+                            <input type="file" id="browser-history-file" accept=".json,.csv" class="text-sm border rounded-lg p-2 bg-white">
+                            <button onclick="uploadBrowserHistory()" class="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-bold hover:bg-blue-700"><i class="fas fa-upload mr-1"></i>Upload history</button>
+                            <button onclick="importDemoGoogleSearch()" class="bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-bold hover:bg-green-700"><i class="fas fa-vial mr-1"></i>Import demo search</button>
+                        </div>
+                        <div class="text-xs text-gray-400 leading-relaxed">
+                            Demo search után kérdezd meg: <b>Can browser history alone create an action item?</b>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="mt-6 bg-white border rounded-2xl shadow-sm p-6">
+                    <h2 class="text-lg font-bold text-gray-800 mb-3 flex items-center gap-2"><i class="fas fa-clipboard-list text-purple-500"></i>Connector test output</h2>
+                    <pre id="connector-output" class="bg-slate-900 text-slate-100 text-xs rounded-xl p-4 overflow-auto min-h-[160px] whitespace-pre-wrap">Ready.</pre>
                 </div>
             </div>
 
