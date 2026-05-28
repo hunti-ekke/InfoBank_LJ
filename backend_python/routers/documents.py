@@ -1,4 +1,5 @@
 import uuid
+import re
 import fitz
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.orm import Session
@@ -35,6 +36,37 @@ def display_permission(doc: models.Document, permission: models.UserDocumentPerm
     return permission.permission_type.value if hasattr(permission.permission_type, "value") else str(permission.permission_type)
 
 
+def deterministic_keywords_from_text(text: str) -> list[str]:
+    """Add stable routing keywords that LLM keyword extraction may miss.
+
+    The chat router uses document keywords as its first routing signal. Some
+    specific factual questions such as project codename can fail if the LLM
+    extractor chooses only broad topical words. These deterministic additions
+    keep uploaded owner documents discoverable without weakening governance.
+    """
+
+    lowered = text.lower()
+    rules = {
+        "project": [r"\bproject\b"],
+        "codename": [r"\bcodename\b", r"\bcode\s*name\b"],
+        "action": [r"\baction\b", r"\baction item\b"],
+        "deadline": [r"\bdeadline\b", r"\bdue\b", r"\bby\s+20\d{2}-\d{2}-\d{2}\b"],
+        "approval": [r"\bapproval\b"],
+        "average": [r"\baverage\b", r"\bmean\b"],
+        "metadata": [r"\bmetadata\b"],
+        "aggregate": [r"\baggregate\b"],
+        "browser": [r"\bbrowser\b"],
+        "history": [r"\bhistory\b"],
+        "ownership": [r"\bownership\b", r"\bowner\b"],
+        "document": [r"\bdocument\b"],
+    }
+    found: list[str] = []
+    for keyword, patterns in rules.items():
+        if any(re.search(pattern, lowered) for pattern in patterns):
+            found.append(keyword)
+    return found
+
+
 @router.post("/upload")
 async def upload_document(
     file: UploadFile = File(...),
@@ -67,7 +99,7 @@ async def upload_document(
             temperature=0.3,
         )
         raw_keywords = [k.strip().lower() for k in completion.choices[0].message.content.split(',') if k.strip()]
-        keyword_list = list(set(raw_keywords))
+        keyword_list = list(dict.fromkeys(raw_keywords + deterministic_keywords_from_text(full_text)))
 
         doc_id = str(uuid.uuid4())
         doc_visibility = visibility_from_permission(permission_type)
