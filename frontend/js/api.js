@@ -1,4 +1,7 @@
 const API = "http://127.0.0.1:8000/api";
+const AUTH_TOKEN_KEY = "infobank_access_token";
+const AUTH_USER_KEY = "infobank_user_id";
+
 let CURRENT_USER_ID = "";
 let ACCESS_TOKEN = "";
 
@@ -9,6 +12,66 @@ function escapeHtml(value) {
         .replaceAll('>', '&gt;')
         .replaceAll('"', '&quot;')
         .replaceAll("'", '&#039;');
+}
+
+function saveSession(userId, token) {
+    CURRENT_USER_ID = userId;
+    ACCESS_TOKEN = token;
+    localStorage.setItem(AUTH_USER_KEY, userId);
+    localStorage.setItem(AUTH_TOKEN_KEY, token);
+}
+
+function clearSession() {
+    CURRENT_USER_ID = "";
+    ACCESS_TOKEN = "";
+    localStorage.removeItem(AUTH_USER_KEY);
+    localStorage.removeItem(AUTH_TOKEN_KEY);
+}
+
+function showAppShell() {
+    document.getElementById('login-screen').classList.add('hidden');
+    document.getElementById('app-wrapper').classList.remove('hidden');
+}
+
+function showLoginScreen() {
+    document.getElementById('app-wrapper').classList.add('hidden');
+    document.getElementById('login-screen').classList.remove('hidden');
+}
+
+async function restoreSession() {
+    const token = localStorage.getItem(AUTH_TOKEN_KEY);
+    const userId = localStorage.getItem(AUTH_USER_KEY);
+
+    const legacyLogoutBtn = document.querySelector('button[onclick="location.reload()"]');
+    if (legacyLogoutBtn) legacyLogoutBtn.onclick = logout;
+
+    if (!token || !userId) {
+        clearSession();
+        showLoginScreen();
+        return;
+    }
+
+    CURRENT_USER_ID = userId;
+    ACCESS_TOKEN = token;
+
+    const ok = await loadProfile();
+    if (ok) {
+        showAppShell();
+    } else {
+        clearSession();
+        showLoginScreen();
+    }
+}
+
+function logout() {
+    clearSession();
+    showLoginScreen();
+    document.getElementById('view-chat').innerHTML = `
+        <div class="flex justify-start w-full">
+            <div class="bg-gray-100 border border-gray-200 p-4 rounded-2xl rounded-tl-none max-w-[80%] md:max-w-2xl text-gray-700 shadow-sm text-sm">
+                Hello! I am your InfoBank Assistant. I only answer based on your uploaded documents. How can I help?
+            </div>
+        </div>`;
 }
 
 function roleBadge(role) {
@@ -113,16 +176,15 @@ async function doLogin() {
     const r = await fetch(`${API}/login`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(d) });
     const res = await r.json();
     if(r.ok) { 
-        CURRENT_USER_ID = res.user_id; 
-        ACCESS_TOKEN = res.access_token;
-        document.getElementById('login-screen').classList.add('hidden'); 
-        document.getElementById('app-wrapper').classList.remove('hidden'); 
-        loadProfile(); 
+        saveSession(res.user_id, res.access_token);
+        showAppShell();
+        await loadProfile();
     } else alert("Login failed");
 }
 
 async function loadProfile() {
     try {
+        if (!ACCESS_TOKEN) return false;
         const r = await fetch(`${API}/profile/me`, { headers: { 'Authorization': `Bearer ${ACCESS_TOKEN}` } });
         const user = await r.json();
         if(!r.ok) throw new Error(user.detail);
@@ -135,7 +197,11 @@ async function loadProfile() {
             document.getElementById('sidebar-display-fullname').classList.add('hidden');
         }
         renderAvatar('sidebar-avatar-container', user.avatar_url, user.username);
-    } catch(e) { console.error("Profile load failed", e); }
+        return true;
+    } catch(e) { 
+        console.error("Profile load failed", e);
+        return false;
+    }
 }
 
 async function saveProfile() {
@@ -306,3 +372,5 @@ async function loadMap() {
         box.innerHTML += `<span class="${s} bg-white border border-blue-200 text-blue-700 rounded-full hover:scale-110 transition cursor-default shadow-sm m-1">${escapeHtml(k.keyword)} <span class="bg-blue-100 text-blue-800 text-xs px-2 py-0.5 rounded-full ml-1">${k.count}</span></span>`;
     });
 }
+
+window.addEventListener('DOMContentLoaded', restoreSession);
