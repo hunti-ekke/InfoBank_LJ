@@ -4,12 +4,29 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.orm import Session
 import models
 import ai_service
+import security
 from database import get_db
 
 router = APIRouter(prefix="/api", tags=["Documents"])
 
+
+def require_owner(db: Session, doc_id: str, user_id: str) -> models.UserDocumentPermission:
+    perm_record = db.query(models.UserDocumentPermission).filter(
+        models.UserDocumentPermission.document_id == doc_id,
+        models.UserDocumentPermission.user_id == user_id,
+    ).first()
+    if not perm_record or perm_record.permission_type != models.PermissionType.Owner:
+        raise HTTPException(status_code=403, detail="Only the Owner can perform this operation.")
+    return perm_record
+
+
 @router.post("/upload")
-async def upload_document(file: UploadFile = File(...), user_id: str = Form(...), permission_type: models.PermissionType = Form(...), db: Session = Depends(get_db)):
+async def upload_document(
+    file: UploadFile = File(...),
+    permission_type: models.PermissionType = Form(...),
+    user_id: str = Depends(security.get_current_user_id),
+    db: Session = Depends(get_db),
+):
     try:
         content = await file.read()
         doc_pdf = fitz.open(stream=content, filetype="pdf")
@@ -65,12 +82,31 @@ async def upload_document(file: UploadFile = File(...), user_id: str = Form(...)
 
         db.commit()
         return {"status": "success", "keywords": keyword_list, "document_id": doc_id}
+    except HTTPException:
+        db.rollback()
+        raise
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/documents/{user_id}")
-def get_user_documents(user_id: str, db: Session = Depends(get_db)):
+
+@router.get("/documents/me")
+def get_my_documents(user_id: str = Depends(security.get_current_user_id), db: Session = Depends(get_db)):
+    return build_document_list(user_id, db)
+
+
+@router.get("/documents/{requested_user_id}")
+def get_user_documents(
+    requested_user_id: str,
+    user_id: str = Depends(security.get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    if requested_user_id != user_id:
+        raise HTTPException(status_code=403, detail="You can only access your own document list.")
+    return build_document_list(user_id, db)
+
+
+def build_document_list(user_id: str, db: Session):
     try:
         permissions = db.query(models.UserDocumentPermission).filter(models.UserDocumentPermission.user_id == user_id).all()
         doc_list = []
@@ -93,10 +129,17 @@ def get_user_documents(user_id: str, db: Session = Depends(get_db)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.post("/documents/update-keywords")
-def update_keywords(doc_id: str = Form(...), keywords: str = Form(...), db: Session = Depends(get_db)):
+def update_keywords(
+    doc_id: str = Form(...),
+    keywords: str = Form(...),
+    user_id: str = Depends(security.get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    require_owner(db, doc_id, user_id)
     db.query(models.DocumentKeyword).filter(models.DocumentKeyword.document_id == doc_id).delete()
-    new_kw_list = [k.strip() for k in keywords.split(',') if k.strip()]
+    new_kw_list = [k.strip().lower() for k in keywords.split(',') if k.strip()]
     for word in new_kw_list:
         db_kw = db.query(models.Keyword).filter(models.Keyword.word == word).first()
         if not db_kw:
@@ -107,20 +150,33 @@ def update_keywords(doc_id: str = Form(...), keywords: str = Form(...), db: Sess
     db.commit()
     return {"status": "success", "message": "Keywords updated"}
 
+
 @router.post("/documents/update-permission")
-def update_permission(doc_id: str = Form(...), user_id: str = Form(...), new_perm: str = Form(...), db: Session = Depends(get_db)):
-    perm_record = db.query(models.UserDocumentPermission).filter(models.UserDocumentPermission.document_id == doc_id, models.UserDocumentPermission.user_id == user_id).first()
-    if not perm_record or perm_record.permission_type != models.PermissionType.Owner:
-        raise HTTPException(status_code=403, detail="Only the Owner can change permissions.")
+def update_permission(
+    doc_id: str = Form(...),
+    new_perm: str = Form(...),
+    user_id: str = Depends(security.get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    require_owner(db, doc_id, user_id)
     doc = db.query(models.Document).filter(models.Document.id == doc_id).first()
-    if doc:
-        doc.visibility = "Aggregate" if new_perm == "Aggregate" else "Private"
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found.")
+    doc.visibility = "Aggregate" if new_perm == "Aggregate" else "Private"
     db.commit()
     return {"status": "success", "message": "Permission updated"}
 
+
 @router.delete("/documents/delete")
-def delete_document(doc_id: str = Form(...), user_id: str = Form(...), db: Session = Depends(get_db)):
-    perm_record = db.query(models.UserDocumentPermission).filter(models.UserDocumentPermission.document_id == doc_id, models.UserDocumentPermission.user_id == user_id).first()
+def delete_document(
+    doc_id: str = Form(...),
+    user_id: str = Depends(security.get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    perm_record = db.query(models.UserDocumentPermission).filter(
+        models.UserDocumentPermission.document_id == doc_id,
+        models.UserDocumentPermission.user_id == user_id,
+    ).first()
     if not perm_record:
         raise HTTPException(status_code=404, detail="The requested document or permission could not be found.")
     if perm_record.permission_type != models.PermissionType.Owner:
@@ -144,11 +200,15 @@ def delete_document(doc_id: str = Form(...), user_id: str = Form(...), db: Sessi
         db.rollback()
         raise HTTPException(status_code=500, detail=f"An error occurred while deleting: {str(e)}")
 
+
 @router.post("/documents/transfer")
-def transfer_document_ownership(doc_id: str = Form(...), user_id: str = Form(...), new_username: str = Form(...), db: Session = Depends(get_db)):
-    current_perm = db.query(models.UserDocumentPermission).filter(models.UserDocumentPermission.document_id == doc_id, models.UserDocumentPermission.user_id == user_id).first()
-    if not current_perm or current_perm.permission_type != models.PermissionType.Owner:
-        raise HTTPException(status_code=403, detail="You are not authorized to transfer this document (only the Owner can do so).")
+def transfer_document_ownership(
+    doc_id: str = Form(...),
+    new_username: str = Form(...),
+    user_id: str = Depends(security.get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    current_perm = require_owner(db, doc_id, user_id)
     target_user = db.query(models.User).filter(models.User.username == new_username).first()
     if not target_user:
         raise HTTPException(status_code=404, detail="The provided user was not found in the system.")
