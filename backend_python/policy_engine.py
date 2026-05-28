@@ -2,14 +2,16 @@
 
 The engine resolves each candidate source into one of four use decisions:
 Full, Aggregate, Metadata, or Deny. It combines explicit policy rules,
-document visibility, and direct user permissions. Retrieval and generation
-must consume only the resulting decision, never raw caller-provided user_id.
+document visibility, direct user permissions, and owned evidence-unit policy.
+Retrieval and generation must consume only the resulting decision, never raw
+caller-provided user_id.
 """
 
 from __future__ import annotations
 
 import datetime
-from typing import Any, Dict, Iterable, List
+import json
+from typing import Any, Dict, Iterable
 
 from sqlalchemy.orm import Session
 
@@ -63,6 +65,21 @@ def _decision_to_role(decision: str) -> str:
     return relevance.SOURCE_ROLE_GOVERNANCE_EXCLUDED
 
 
+def _strongest_active_rule(db: Session, target_type: str, target_id: str, purpose: str) -> models.PolicyRule | None:
+    policy_rules = db.query(models.PolicyRule).filter(
+        models.PolicyRule.target_type == target_type,
+        models.PolicyRule.target_id == target_id,
+    ).all()
+    active_rules = [rule for rule in policy_rules if _is_rule_active(rule, purpose)]
+    if not active_rules:
+        return None
+    deny_rules = [r for r in active_rules if _mode_value(r.access_mode) == models.PolicyAccessMode.Deny.value]
+    if deny_rules:
+        return deny_rules[0]
+    rank = {"Full": 3, "Aggregate": 2, "Metadata": 1}
+    return sorted(active_rules, key=lambda r: rank.get(_mode_value(r.access_mode), 0), reverse=True)[0]
+
+
 def resolve_document_access(db: Session, user_id: str, doc_id: str, purpose: str = "grounded_question_answering") -> Dict[str, Any]:
     """Resolve one document into a CITDS use decision."""
 
@@ -77,33 +94,8 @@ def resolve_document_access(db: Session, user_id: str, doc_id: str, purpose: str
             "policy_rule_id": None,
         }
 
-    permission = db.query(models.UserDocumentPermission).filter(
-        models.UserDocumentPermission.user_id == user_id,
-        models.UserDocumentPermission.document_id == doc_id,
-    ).first()
-
-    policy_rules = db.query(models.PolicyRule).filter(
-        models.PolicyRule.target_type == TARGET_DOCUMENT,
-        models.PolicyRule.target_id == doc_id,
-    ).all()
-    active_rules = [rule for rule in policy_rules if _is_rule_active(rule, purpose)]
-
-    if active_rules:
-        deny_rules = [r for r in active_rules if _mode_value(r.access_mode) == models.PolicyAccessMode.Deny.value]
-        if deny_rules:
-            rule = deny_rules[0]
-            decision = relevance.USE_DENY
-            return {
-                "target_id": doc_id,
-                "target_type": TARGET_DOCUMENT,
-                "use_decision": decision,
-                "source_role": _decision_to_role(decision),
-                "reason": "explicit_policy_deny",
-                "policy_rule_id": rule.id,
-            }
-        # Prefer the strongest available non-deny rule for this purpose.
-        rank = {"Full": 3, "Aggregate": 2, "Metadata": 1}
-        rule = sorted(active_rules, key=lambda r: rank.get(_mode_value(r.access_mode), 0), reverse=True)[0]
+    rule = _strongest_active_rule(db, TARGET_DOCUMENT, doc_id, purpose)
+    if rule:
         decision = _mode_to_use_decision(_mode_value(rule.access_mode))
         return {
             "target_id": doc_id,
@@ -114,6 +106,10 @@ def resolve_document_access(db: Session, user_id: str, doc_id: str, purpose: str
             "policy_rule_id": rule.id,
         }
 
+    permission = db.query(models.UserDocumentPermission).filter(
+        models.UserDocumentPermission.user_id == user_id,
+        models.UserDocumentPermission.document_id == doc_id,
+    ).first()
     if permission:
         perm = _mode_value(permission.permission_type)
         if perm in {"Owner", "Reader"}:
@@ -157,6 +153,49 @@ def resolve_document_access(db: Session, user_id: str, doc_id: str, purpose: str
     }
 
 
+def resolve_evidence_unit_access(db: Session, user_id: str, evidence_unit_id: str, purpose: str = "action_reconstruction") -> Dict[str, Any]:
+    """Resolve one owned EvidenceUnit into a CITDS use decision."""
+
+    unit = db.query(models.EvidenceUnit).filter(models.EvidenceUnit.id == evidence_unit_id).first()
+    if not unit:
+        return {
+            "target_id": evidence_unit_id,
+            "target_type": TARGET_EVIDENCE_UNIT,
+            "use_decision": relevance.USE_DENY,
+            "source_role": relevance.SOURCE_ROLE_GOVERNANCE_EXCLUDED,
+            "reason": "evidence_unit_not_found",
+            "policy_rule_id": None,
+        }
+
+    rule = _strongest_active_rule(db, TARGET_EVIDENCE_UNIT, evidence_unit_id, purpose)
+    if rule:
+        decision = _mode_to_use_decision(_mode_value(rule.access_mode))
+        return {
+            "target_id": evidence_unit_id,
+            "target_type": TARGET_EVIDENCE_UNIT,
+            "use_decision": decision,
+            "source_role": _decision_to_role(decision),
+            "reason": f"explicit_policy_{_mode_value(rule.access_mode).lower()}",
+            "policy_rule_id": rule.id,
+        }
+
+    if unit.user_id == user_id:
+        decision = relevance.USE_FULL
+        reason = "owned_evidence_full"
+    else:
+        decision = relevance.USE_DENY
+        reason = "evidence_not_owned"
+
+    return {
+        "target_id": evidence_unit_id,
+        "target_type": TARGET_EVIDENCE_UNIT,
+        "use_decision": decision,
+        "source_role": _decision_to_role(decision),
+        "reason": reason,
+        "policy_rule_id": None,
+    }
+
+
 def resolve_document_access_bulk(db: Session, user_id: str, doc_ids: Iterable[str], purpose: str) -> Dict[str, Any]:
     decisions: Dict[str, str] = {}
     roles: Dict[str, str] = {}
@@ -190,14 +229,41 @@ def resolve_document_access_bulk(db: Session, user_id: str, doc_ids: Iterable[st
     }
 
 
+def resolve_evidence_unit_access_bulk(db: Session, user_id: str, unit_ids: Iterable[str], purpose: str) -> Dict[str, Any]:
+    decisions: Dict[str, str] = {}
+    roles: Dict[str, str] = {}
+    reasons: Dict[str, str] = {}
+    policy_rule_ids: Dict[str, str | None] = {}
+
+    for unit_id in set(unit_ids):
+        resolved = resolve_evidence_unit_access(db, user_id, unit_id, purpose)
+        decisions[unit_id] = resolved["use_decision"]
+        roles[unit_id] = resolved["source_role"]
+        reasons[unit_id] = resolved["reason"]
+        policy_rule_ids[unit_id] = resolved.get("policy_rule_id")
+
+    usable_unit_ids = [uid for uid, d in decisions.items() if d in {relevance.USE_FULL, relevance.USE_AGGREGATE, relevance.USE_METADATA}]
+    content_unit_ids = [uid for uid, d in decisions.items() if d in {relevance.USE_FULL, relevance.USE_AGGREGATE}]
+    metadata_only_unit_ids = [uid for uid, d in decisions.items() if d == relevance.USE_METADATA]
+    denied_unit_ids = [uid for uid, d in decisions.items() if d == relevance.USE_DENY]
+
+    return {
+        "use_decisions": decisions,
+        "source_roles": roles,
+        "policy_reasons": reasons,
+        "policy_rule_ids": policy_rule_ids,
+        "usable_unit_ids": usable_unit_ids,
+        "content_unit_ids": content_unit_ids,
+        "metadata_only_unit_ids": metadata_only_unit_ids,
+        "denied_unit_ids": denied_unit_ids,
+    }
+
+
 def public_metadata_summary(db: Session, doc_id: str) -> Dict[str, Any]:
     doc = db.query(models.Document).filter(models.Document.id == doc_id).first()
     if not doc:
         return {"document_id": doc_id, "status": "missing"}
-    kw_records = db.query(models.Keyword.word).join(
-        models.DocumentKeyword,
-        models.Keyword.id == models.DocumentKeyword.keyword_id,
-    ).filter(models.DocumentKeyword.document_id == doc_id).all()
+    kw_records = db.query(models.Keyword.word).join(models.DocumentKeyword, models.Keyword.id == models.DocumentKeyword.keyword_id).filter(models.DocumentKeyword.document_id == doc_id).all()
     return {
         "document_id": doc.id,
         "file_name": doc.file_path,
@@ -205,6 +271,22 @@ def public_metadata_summary(db: Session, doc_id: str) -> Dict[str, Any]:
         "keywords": [row[0] for row in kw_records],
         "upload_date": doc.upload_date.isoformat() if doc.upload_date else None,
         "content": "[metadata-only: document content withheld]",
+    }
+
+
+def public_evidence_metadata_summary(db: Session, unit_id: str) -> Dict[str, Any]:
+    unit = db.query(models.EvidenceUnit).filter(models.EvidenceUnit.id == unit_id).first()
+    if not unit:
+        return {"evidence_unit_id": unit_id, "status": "missing"}
+    return {
+        "evidence_unit_id": unit.id,
+        "source_type": unit.source_type.value if hasattr(unit.source_type, "value") else str(unit.source_type),
+        "title": unit.title,
+        "source_timestamp": unit.source_timestamp.isoformat() if unit.source_timestamp else None,
+        "thread_id": unit.thread_id,
+        "relation_key": unit.relation_key,
+        "metadata": json.loads(unit.metadata_json or "{}"),
+        "content": "[metadata-only: evidence content withheld]",
     }
 
 
