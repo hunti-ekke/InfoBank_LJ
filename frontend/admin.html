@@ -33,11 +33,13 @@
     </div>
 
     <script>
+        const API_BASE = (window.INFOBANK_API_BASE || `${window.location.origin}/api`).replace(/\/$/, '');
+
         async function fetchLogs() {
             const action = document.getElementById('actionFilter').value;
-            let url = 'http://127.0.0.1:8000/api/admin/logs';
+            let url = `${API_BASE}/admin/logs`;
             if (action) {
-                url += `?action=${action}`;
+                url += `?action=${encodeURIComponent(action)}`;
             }
 
             try {
@@ -62,7 +64,7 @@
                         <td class="p-3 border text-sm text-gray-500">${log.user_id || 'N/A'}</td>
                         <td class="p-3 border font-semibold">${log.action}</td>
                         <td class="p-3 border font-bold ${statusColor}">${details.status || '-'}</td>
-                        <td class="p-3 border text-sm max-w-md truncate cursor-pointer" onclick="alert('Kérdés:\\n${details.question}\\n\\nVálasz:\\n${details.answer}')">
+                        <td class="p-3 border text-sm max-w-md truncate cursor-pointer" onclick="alert('Kérdés:\n${details.question}\n\nVálasz:\n${details.answer}')">
                             ${details.question ? '<b>Q:</b> ' + details.question : ''}
                         </td>
                     `;
