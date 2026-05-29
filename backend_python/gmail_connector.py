@@ -24,11 +24,15 @@ import models
 
 SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
 PROVIDER = "gmail"
-DEFAULT_REDIRECT_URI = "http://127.0.0.1:8000/api/connectors/gmail/callback"
+DEFAULT_APP_BASE_URL = "http://127.0.0.1:8000"
+
+
+def _app_base_url() -> str:
+    return os.getenv("APP_BASE_URL", DEFAULT_APP_BASE_URL).rstrip("/")
 
 
 def _redirect_uri() -> str:
-    return os.getenv("GOOGLE_REDIRECT_URI", DEFAULT_REDIRECT_URI)
+    return os.getenv("GOOGLE_REDIRECT_URI") or f"{_app_base_url()}/api/connectors/gmail/callback"
 
 
 def _allow_insecure_transport_for_localhost(redirect_uri: str) -> None:
