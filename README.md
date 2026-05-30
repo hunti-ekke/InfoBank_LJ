@@ -1,10 +1,7 @@
-## Author
+## InfoBank Project
 
 **János Lénárt** // Hunti
-* Lead Developer
-* InfoBank Project
 * Computer Science Student @ EKKE-IK (Eszterházy Károly Catholic University)
-* Contact: lenartjanos12@gmail.com
 
 ## 📄 License
 
