@@ -19,7 +19,8 @@ def controlled_failure_matrix(
     closed_items = reconstruction.get("closed_items", [])
     contextual_only = reconstruction.get("contextual_only", [])
     metadata_only = reconstruction.get("metadata_only", [])
-    excluded = reconstruction.get("excluded", [])
+    excluded_only = reconstruction.get("excluded_only", [])
+    controlled_failures = reconstruction.get("controlled_failures", [])
     classified_units = reconstruction.get("classified_units", [])
 
     role_counts = {
@@ -33,7 +34,7 @@ def controlled_failure_matrix(
         "closed_items": len(closed_items),
         "contextual_only": len(contextual_only),
         "metadata_only": len(metadata_only),
-        "governance_excluded": len(excluded),
+        "governance_excluded": len(excluded_only),
         "classified_units": len(classified_units),
         "source_roles": controlled_failure.summarize_source_roles(role_counts),
     }
@@ -95,9 +96,9 @@ def controlled_failure_matrix(
             "CF4",
             "Governance-excluded evidence is not used",
             "Excluded sources must not support generation.",
-            f"governance_excluded={len(excluded)}",
-            all(item.get("status") == "governance_excluded_not_action" for item in excluded),
-            excluded_failure if excluded else None,
+            f"governance_excluded={len(excluded_only)}",
+            all(item.get("status") == "governance_excluded" for item in excluded_only),
+            excluded_failure if excluded_only else None,
         ),
         controlled_failure.scenario_result(
             "CF5",
@@ -122,6 +123,7 @@ def controlled_failure_matrix(
             "passed": passed,
             "total": len(scenarios),
             "score": round(passed / max(1, len(scenarios)), 3),
+            "controlled_failures": len(controlled_failures),
             **evidence_state,
         },
         "controlled_failure_schema": {
@@ -129,4 +131,5 @@ def controlled_failure_matrix(
             "fields": ["reason", "message", "evidence_state", "policy_state", "safe_output", "next_steps", "trace"],
         },
         "scenarios": scenarios,
+        "action_list_controlled_failures": controlled_failures,
     }
