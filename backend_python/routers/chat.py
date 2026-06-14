@@ -9,6 +9,7 @@ import relevance
 import evidence_service
 import security
 import policy_engine
+import controlled_failure as cf
 from database import get_db
 
 router = APIRouter(prefix="/api", tags=["Chat"])
@@ -119,8 +120,6 @@ def is_aggregate_statistics_question(question: str) -> bool:
 
 
 def query_retrieved_sources(db: Session, question: str, question_vector: list[float], query_profile: dict, governance_context: dict, doc_ids: list[str], n_results: int = 4) -> tuple[list[dict], list[str]]:
-    """Query Chroma for a specific governance tier and build safe source/context blocks."""
-
     if not doc_ids:
         return [], []
     where_clause = {"document_id": doc_ids[0]} if len(doc_ids) == 1 else {"document_id": {"$in": doc_ids}}
@@ -179,6 +178,58 @@ def chat_success_payload(question, question_keywords, query_profile, governance_
     }
 
 
+def chat_controlled_failure_payload(question, question_keywords, query_profile, governance_context, role_summary, relevance_level_summary, evidence_check, message, sources_list, reason, *, safe_output=None, next_steps=None):
+    source_role_summary = role_summary or relevance.summarize_source_roles(sources_list)
+    relevance_summary = relevance_level_summary or relevance.summarize_relevance_levels(sources_list)
+    evidence_state = {
+        "source_role_summary": source_role_summary,
+        "relevance_level_summary": relevance_summary,
+        "evidence_check": evidence_check or {},
+        "sources_count": len(sources_list or []),
+    }
+    policy_state = {
+        "use_decisions": (governance_context or {}).get("use_decisions", {}),
+        "source_roles": (governance_context or {}).get("source_roles", {}),
+        "usable_doc_ids": (governance_context or {}).get("usable_doc_ids", []),
+        "content_doc_ids": (governance_context or {}).get("content_doc_ids", []),
+        "metadata_only_doc_ids": (governance_context or {}).get("metadata_only_doc_ids", []),
+        "denied_doc_ids": (governance_context or {}).get("denied_doc_ids", []),
+    }
+    failure = cf.build_controlled_failure(
+        reason=reason,
+        message=message,
+        evidence_state=evidence_state,
+        policy_state=policy_state,
+        safe_output=safe_output or message,
+        next_steps=next_steps or [
+            "Connect or upload a permitted primary source.",
+            "Change access policy if you own the source and disclosure is intended.",
+            "Ask for a metadata-level or aggregate-level answer if content use is restricted.",
+        ],
+        trace={
+            "query_profile": query_profile or {},
+            "governance": governance_context or {},
+            "reason": reason,
+        },
+    )
+    return {
+        "status": "controlled_failure",
+        "controlled_failure": failure,
+        "reason": failure["reason"],
+        "message": failure["message"],
+        "answer": failure["safe_output"],
+        "question": question,
+        "extracted_keywords": question_keywords,
+        "query_profile": query_profile,
+        "governance": governance_context,
+        "source_role_summary": source_role_summary,
+        "relevance_level_summary": relevance_summary,
+        "evidence_check": evidence_check,
+        "searched_documents_count": len((governance_context or {}).get("usable_doc_ids", [])),
+        "sources": sources_list,
+    }
+
+
 @router.post("/ask")
 async def ask_infobank(
     background_tasks: BackgroundTasks,
@@ -227,8 +278,12 @@ async def ask_infobank(
 
         if not candidate_doc_ids:
             msg = "There is no document related to the question in the InfoBank."
-            background_tasks.add_task(log_chat_event, db, user_id, question, msg, question_keywords, [], "rejected", query_profile, {}, {})
-            return {"status": "controlled_failure", "message": msg, "query_profile": query_profile}
+            evidence_check = {"decision": "controlled_failure", "warnings": ["no_relevant_source"]}
+            background_tasks.add_task(log_chat_event, db, user_id, question, msg, question_keywords, [], "controlled_failure", query_profile, {}, evidence_check)
+            return chat_controlled_failure_payload(
+                question, question_keywords, query_profile, {}, {}, {}, evidence_check, msg, [], cf.CF_NO_RELEVANT_SOURCE,
+                next_steps=["Upload or connect a relevant source before asking this question."],
+            )
 
         governance_context = policy_engine.resolve_document_access_bulk(
             db=db,
@@ -283,27 +338,43 @@ async def ask_infobank(
 
         if not content_doc_ids and metadata_doc_ids:
             msg = "Only metadata-level sources are available for this question; document content is withheld by policy, so the answer cannot be found in the document content."
-            background_tasks.add_task(log_chat_event, db, user_id, question, msg, question_keywords, sources_list, "metadata_only", query_profile, governance_context, evidence_check)
-            return chat_success_payload(question, question_keywords, query_profile, governance_context, role_summary, relevance_level_summary, evidence_check, msg, sources_list)
+            evidence_check.setdefault("warnings", []).append("metadata_only_content_withheld")
+            evidence_check["decision"] = "controlled_failure"
+            background_tasks.add_task(log_chat_event, db, user_id, question, msg, question_keywords, sources_list, "controlled_failure", query_profile, governance_context, evidence_check)
+            return chat_controlled_failure_payload(
+                question, question_keywords, query_profile, governance_context, role_summary, relevance_level_summary, evidence_check, msg, sources_list, cf.CF_METADATA_ONLY,
+                safe_output="I can identify metadata-level source information, but I cannot use or disclose the document content under the current policy.",
+            )
 
         if not content_doc_ids:
             msg = "There is no permitted source that can be used for this question in the InfoBank."
-            background_tasks.add_task(log_chat_event, db, user_id, question, msg, question_keywords, sources_list, "rejected", query_profile, governance_context, evidence_check)
-            return {"status": "controlled_failure", "message": msg, "query_profile": query_profile, "governance": governance_context, "evidence_check": evidence_check}
+            evidence_check.setdefault("warnings", []).append("no_permitted_content_source")
+            evidence_check["decision"] = "controlled_failure"
+            background_tasks.add_task(log_chat_event, db, user_id, question, msg, question_keywords, sources_list, "controlled_failure", query_profile, governance_context, evidence_check)
+            return chat_controlled_failure_payload(
+                question, question_keywords, query_profile, governance_context, role_summary, relevance_level_summary, evidence_check, msg, sources_list, cf.CF_NO_PERMITTED_SOURCE,
+            )
 
         has_primary = role_summary.get(relevance.SOURCE_ROLE_PRIMARY, 0) > 0
         has_aggregate = role_summary.get(relevance.SOURCE_ROLE_AGGREGATE_ONLY, 0) > 0
         if not has_primary and has_aggregate and not is_aggregate_statistics_question(question):
-            msg = "The answer cannot be found in the document."
+            msg = "The answer cannot be found in the document. Only aggregate-level evidence is available, and it cannot support a specific individual content claim."
             evidence_check.setdefault("warnings", []).append("aggregate_only_not_sufficient_for_specific_content_claim")
             evidence_check["decision"] = "controlled_failure"
-            background_tasks.add_task(log_chat_event, db, user_id, question, msg, question_keywords, sources_list, "not_found", query_profile, governance_context, evidence_check)
-            return chat_success_payload(question, question_keywords, query_profile, governance_context, role_summary, relevance_level_summary, evidence_check, msg, sources_list)
+            background_tasks.add_task(log_chat_event, db, user_id, question, msg, question_keywords, sources_list, "controlled_failure", query_profile, governance_context, evidence_check)
+            return chat_controlled_failure_payload(
+                question, question_keywords, query_profile, governance_context, role_summary, relevance_level_summary, evidence_check, msg, sources_list, cf.CF_AGGREGATE_ONLY,
+                safe_output="I can answer only aggregate/statistical questions from these sources, not document-specific or individual-content claims.",
+            )
 
         if not context_blocks:
-            msg = "The answer cannot be found in the document."
-            background_tasks.add_task(log_chat_event, db, user_id, question, msg, question_keywords, sources_list, "not_found", query_profile, governance_context, evidence_check)
-            return {"status": "success", "answer": msg, "query_profile": query_profile, "governance": governance_context, "evidence_check": evidence_check, "sources": sources_list}
+            msg = "The answer cannot be found in the document. No retrieved permitted context block is strong enough to support the requested answer."
+            evidence_check.setdefault("warnings", []).append("no_permitted_context_block")
+            evidence_check["decision"] = "controlled_failure"
+            background_tasks.add_task(log_chat_event, db, user_id, question, msg, question_keywords, sources_list, "controlled_failure", query_profile, governance_context, evidence_check)
+            return chat_controlled_failure_payload(
+                question, question_keywords, query_profile, governance_context, role_summary, relevance_level_summary, evidence_check, msg, sources_list, cf.CF_NO_PRIMARY_EVIDENCE,
+            )
 
         context_text = "\n\n---\n\n".join(context_blocks)
         system_instruction = (
@@ -327,9 +398,17 @@ async def ask_infobank(
         if is_browser_history_action_rule_question(question):
             answer = "No. Browser history or activity traces can provide contextual support, refine details, or help prioritize an existing task, but they cannot create an action item by themselves without primary evidence such as an official request, assignment, calendar obligation, or user commitment."
             evidence_check.setdefault("warnings", []).append("browser_history_contextual_only_rule_applied")
-            evidence_check["decision"] = "architectural_rule_answer"
+            evidence_check["decision"] = "restricted_answer"
 
-        final_status = "not_found" if "The answer cannot be found in the document." in answer else "success"
+        if "The answer cannot be found in the document." in answer:
+            evidence_check.setdefault("warnings", []).append("generator_reported_missing_support")
+            evidence_check["decision"] = "controlled_failure"
+            background_tasks.add_task(log_chat_event, db, user_id, question, answer, question_keywords, sources_list, "controlled_failure", query_profile, governance_context, evidence_check)
+            return chat_controlled_failure_payload(
+                question, question_keywords, query_profile, governance_context, role_summary, relevance_level_summary, evidence_check, answer, sources_list, cf.CF_NO_PRIMARY_EVIDENCE,
+            )
+
+        final_status = "success"
         background_tasks.add_task(log_chat_event, db, user_id, question, answer, question_keywords, sources_list, final_status, query_profile, governance_context, evidence_check)
         return chat_success_payload(question, question_keywords, query_profile, governance_context, role_summary, relevance_level_summary, evidence_check, answer, sources_list)
     except Exception as e:
