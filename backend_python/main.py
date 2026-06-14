@@ -6,7 +6,7 @@ import models
 from database import engine, get_db
 
 # IMPORTÁLÁS A ROUTERS MAPPÁBÓL:
-from routers import auth, profile, analytics, documents, chat, admin, evidence, policy, citds_eval, classifier, connectors
+from routers import auth, profile, analytics, documents, chat, admin, evidence, policy, citds_eval, controlled_failure_eval, classifier, connectors
 
 load_dotenv()
 
@@ -19,7 +19,7 @@ app.add_middleware(
     allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=["*"]
 )
 
 # ROUTEREK BEKÖTÉSE
@@ -32,6 +32,7 @@ app.include_router(admin.router)
 app.include_router(evidence.router)
 app.include_router(policy.router)
 app.include_router(citds_eval.router)
+app.include_router(controlled_failure_eval.router)
 app.include_router(classifier.router)
 app.include_router(connectors.router)
 
